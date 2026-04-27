@@ -594,3 +594,116 @@ def totals_under_core_signals(
         'backtest': backtest,
         'rows': rows
     }
+
+@router.get('/signals/today')
+def propicks_signals_today(
+    analysis_date: date | None = Query(default=None)
+):
+    d = analysis_date or today_local()
+
+    moneyline_rows = fetch_all(
+        '''
+        select *
+        from propicks.moneyline_core_v1_signals
+        where analysis_date = %s
+        order by
+          case
+            when moneyline_tier = 'HOME_CORE' then 1
+            when moneyline_tier = 'AWAY_CORE' then 2
+            else 3
+          end,
+          team_abbr
+        ''',
+        (d,)
+    )
+
+    team_runs_rows = fetch_all(
+        '''
+        select *
+        from propicks.team_runs_core_v1_signals
+        where analysis_date = %s
+        order by
+          case
+            when team_runs_tier = 'POWER_5PLUS' then 1
+            when team_runs_tier = 'CORE_3PLUS' then 2
+            else 3
+          end,
+          team_rs_l5 desc,
+          opp_era_l5 desc
+        ''',
+        (d,)
+    )
+
+    totals_over_rows = fetch_all(
+        '''
+        select *
+        from propicks.totals_over_core_v1_signals
+        where analysis_date = %s
+        order by
+          combined_era_l5 desc,
+          combined_whip_l5 desc
+        ''',
+        (d,)
+    )
+
+    totals_under_rows = fetch_all(
+        '''
+        select *
+        from propicks.totals_under_core_v1_signals
+        where analysis_date = %s
+        order by
+          case
+            when totals_under_tier = 'UNDER_ELITE' then 1
+            when totals_under_tier = 'UNDER_CORE' then 2
+            else 3
+          end,
+          combined_ra_l5 asc,
+          combined_whip_l5 asc
+        ''',
+        (d,)
+    )
+
+    backtest = fetch_all(
+        '''
+        select
+          system_id,
+          version,
+          target_metric,
+          sample_size,
+          wins,
+          losses,
+          pushes,
+          success_rate,
+          last_updated
+        from propicks.backtest_results
+        where version = 'v1.0'
+          and system_id in (
+            'MONEYLINE_CORE_V1',
+            'TEAM_RUNS_CORE_V1',
+            'TEAM_RUNS_POWER_V1',
+            'TOTALS_OVER_CORE_V1',
+            'TOTALS_UNDER_CORE_V1',
+            'TOTALS_UNDER_ELITE_V1'
+          )
+        order by system_id, target_metric
+        '''
+    )
+
+    return {
+        'system': 'ProPicksMLB',
+        'version': 'v1.0',
+        'analysis_date': d,
+        'counts': {
+            'moneyline': len(moneyline_rows),
+            'team_runs': len(team_runs_rows),
+            'totals_over': len(totals_over_rows),
+            'totals_under': len(totals_under_rows),
+        },
+        'signals': {
+            'moneyline': moneyline_rows,
+            'team_runs': team_runs_rows,
+            'totals_over': totals_over_rows,
+            'totals_under': totals_under_rows,
+        },
+        'backtest': backtest
+    }
