@@ -291,3 +291,78 @@ def team_runs_global_audit():
         'total': total,
         'by_target_metric': rows
     }
+
+@router.get('/moneyline-core/signals')
+def moneyline_core_signals(
+    analysis_date: date | None = Query(default=None)
+):
+    d = analysis_date or today_local()
+
+    rows = fetch_all(
+        '''
+        select
+          analysis_snapshot_id,
+          analysis_date,
+          game_pk,
+          moneyline_tier,
+
+          team_id,
+          team_abbr,
+          team_name,
+
+          opponent_team_id,
+          opponent_abbr,
+          opponent_name,
+
+          home_away,
+
+          team_score,
+          opponent_score,
+          won_moneyline,
+
+          log5_home_prob,
+          whip_edge,
+          ra_edge,
+          era_edge,
+          team_ra_l5,
+
+          team_rs_l5,
+          opp_rs_l5,
+          team_whip_l5,
+          opp_whip_l5,
+          team_era_l5,
+          opp_era_l5
+        from propicks.moneyline_core_v1_signals
+        where analysis_date = %s
+        order by
+          case when moneyline_tier = 'HOME_CORE' then 1 else 2 end,
+          log5_home_prob desc
+        ''',
+        (d,)
+    )
+
+    backtest = fetch_all(
+        '''
+        select
+          target_metric,
+          sample_size,
+          wins,
+          losses,
+          pushes,
+          success_rate,
+          last_updated
+        from propicks.backtest_results
+        where system_id = 'MONEYLINE_CORE_V1'
+          and version = 'v1.0'
+        order by target_metric
+        '''
+    )
+
+    return {
+        'system_id': 'MONEYLINE_CORE_V1',
+        'version': 'v1.0',
+        'analysis_date': d,
+        'count': len(rows),
+        'backtest': backtest,
+        'rows': rows
+    }
