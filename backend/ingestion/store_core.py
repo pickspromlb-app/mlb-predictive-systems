@@ -61,11 +61,84 @@ def store_linescore(game_pk: int, payload: dict):
 def games_for_date(target_date: date):
     return fetch_all('select * from core.games where game_date=%s order by game_datetime', (target_date,))
 
-def store_boxscore(game_pk: int, game_date: date, away_team_id: int, home_team_id: int, payload: dict):
-    rows = []
-    for side, team_id, opp_id in [('away', away_team_id, home_team_id), ('home', home_team_id, away_team_id)]:
-        batting = (((payload.get('teams') or {}).get(side) or {}).get('teamStats') or {}).get('batting') or {}
-        rows.append({'game_pk': game_pk, 'team_id': team_id, 'opponent_team_id': opp_id, 'game_date': game_date, 'home_away': side, 'ab': as_int(batting.get('atBats')), 'r': as_int(batting.get('runs')), 'h': as_int(batting.get('hits')), 'doubles': as_int(batting.get('doubles')), 'triples': as_int(batting.get('triples')), 'hr': as_int(batting.get('homeRuns')), 'rbi': as_int(batting.get('rbi')), 'bb': as_int(batting.get('baseOnBalls')), 'ibb': as_int(batting.get('intentionalWalks')), 'hbp': as_int(batting.get('hitByPitch')), 'sf': as_int(batting.get('sacFlies')), 'so': as_int(batting.get('strikeOuts')), 'sb': as_int(batting.get('stolenBases')), 'cs': as_int(batting.get('caughtStealing')), 'lob': as_int(batting.get('leftOnBase')), 'tb': as_int(batting.get('totalBases')), 'pa': as_int(batting.get('plateAppearances'))})
-    execute_many('''insert into core.team_boxscore_batting (game_pk,team_id,opponent_team_id,game_date,home_away,ab,r,h,doubles,triples,hr,rbi,bb,ibb,hbp,sf,so,sb,cs,lob,tb,pa,source_timestamp) values (%(game_pk)s,%(team_id)s,%(opponent_team_id)s,%(game_date)s,%(home_away)s,%(ab)s,%(r)s,%(h)s,%(doubles)s,%(triples)s,%(hr)s,%(rbi)s,%(bb)s,%(ibb)s,%(hbp)s,%(sf)s,%(so)s,%(sb)s,%(cs)s,%(lob)s,%(tb)s,%(pa)s,now()) on conflict (game_pk,team_id) do update set ab=excluded.ab,r=excluded.r,h=excluded.h,doubles=excluded.doubles,triples=excluded.triples,hr=excluded.hr,rbi=excluded.rbi,bb=excluded.bb,ibb=excluded.ibb,hbp=excluded.hbp,sf=excluded.sf,so=excluded.so,sb=excluded.sb,cs=excluded.cs,lob=excluded.lob,tb=excluded.tb,pa=excluded.pa,updated_at=now()''', rows)
-    return {'team_batting': len(rows)}
 
+def store_boxscore(game_pk: int, game_date: date, away_team_id: int, home_team_id: int, payload: dict):
+    batting_rows = []
+    pitching_rows = []
+
+    for side, team_id, opp_id in [
+        ('away', away_team_id, home_team_id),
+        ('home', home_team_id, away_team_id)
+    ]:
+        team_data = ((payload.get('teams') or {}).get(side) or {})
+        team_stats = team_data.get('teamStats') or {}
+
+        batting = team_stats.get('batting') or {}
+        batting_rows.append({
+            'game_pk': game_pk,
+            'team_id': team_id,
+            'opponent_team_id': opp_id,
+            'game_date': game_date,
+            'home_away': side,
+            'ab': as_int(batting.get('atBats')),
+            'r': as_int(batting.get('runs')),
+            'h': as_int(batting.get('hits')),
+            'doubles': as_int(batting.get('doubles')),
+            'triples': as_int(batting.get('triples')),
+            'hr': as_int(batting.get('homeRuns')),
+            'rbi': as_int(batting.get('rbi')),
+            'bb': as_int(batting.get('baseOnBalls')),
+            'ibb': as_int(batting.get('intentionalWalks')),
+            'hbp': as_int(batting.get('hitByPitch')),
+            'sf': as_int(batting.get('sacFlies')),
+            'so': as_int(batting.get('strikeOuts')),
+            'sb': as_int(batting.get('stolenBases')),
+            'cs': as_int(batting.get('caughtStealing')),
+            'lob': as_int(batting.get('leftOnBase')),
+            'tb': as_int(batting.get('totalBases')),
+            'pa': as_int(batting.get('plateAppearances'))
+        })
+
+        pitching = team_stats.get('pitching') or {}
+        pitching_rows.append({
+            'game_pk': game_pk,
+            'team_id': team_id,
+            'opponent_team_id': opp_id,
+            'game_date': game_date,
+            'home_away': side,
+            'ip_outs': parse_ip_outs(pitching.get('inningsPitched')),
+            'h': as_int(pitching.get('hits')),
+            'r': as_int(pitching.get('runs')),
+            'er': as_int(pitching.get('earnedRuns')),
+            'bb': as_int(pitching.get('baseOnBalls')),
+            'ibb': as_int(pitching.get('intentionalWalks')),
+            'so': as_int(pitching.get('strikeOuts')),
+            'hr': as_int(pitching.get('homeRuns')),
+            'hbp': as_int(pitching.get('hitBatsmen') or pitching.get('hitByPitch')),
+            'bf': as_int(pitching.get('battersFaced')),
+            'pitches': as_int(pitching.get('numberOfPitches') or pitching.get('pitchesThrown')),
+            'strikes': as_int(pitching.get('strikes'))
+        })
+
+    execute_many(
+        """insert into core.team_boxscore_batting
+        (game_pk,team_id,opponent_team_id,game_date,home_away,ab,r,h,doubles,triples,hr,rbi,bb,ibb,hbp,sf,so,sb,cs,lob,tb,pa,source_timestamp)
+        values (%(game_pk)s,%(team_id)s,%(opponent_team_id)s,%(game_date)s,%(home_away)s,%(ab)s,%(r)s,%(h)s,%(doubles)s,%(triples)s,%(hr)s,%(rbi)s,%(bb)s,%(ibb)s,%(hbp)s,%(sf)s,%(so)s,%(sb)s,%(cs)s,%(lob)s,%(tb)s,%(pa)s,now())
+        on conflict (game_pk,team_id) do update set
+        ab=excluded.ab,r=excluded.r,h=excluded.h,doubles=excluded.doubles,triples=excluded.triples,hr=excluded.hr,rbi=excluded.rbi,bb=excluded.bb,ibb=excluded.ibb,hbp=excluded.hbp,sf=excluded.sf,so=excluded.so,sb=excluded.sb,cs=excluded.cs,lob=excluded.lob,tb=excluded.tb,pa=excluded.pa,updated_at=now()""",
+        batting_rows
+    )
+
+    execute_many(
+        """insert into core.team_boxscore_pitching
+        (game_pk,team_id,opponent_team_id,game_date,home_away,ip_outs,h,r,er,bb,ibb,so,hr,hbp,bf,pitches,strikes,source_timestamp)
+        values (%(game_pk)s,%(team_id)s,%(opponent_team_id)s,%(game_date)s,%(home_away)s,%(ip_outs)s,%(h)s,%(r)s,%(er)s,%(bb)s,%(ibb)s,%(so)s,%(hr)s,%(hbp)s,%(bf)s,%(pitches)s,%(strikes)s,now())
+        on conflict (game_pk,team_id) do update set
+        ip_outs=excluded.ip_outs,h=excluded.h,r=excluded.r,er=excluded.er,bb=excluded.bb,ibb=excluded.ibb,so=excluded.so,hr=excluded.hr,hbp=excluded.hbp,bf=excluded.bf,pitches=excluded.pitches,strikes=excluded.strikes,updated_at=now()""",
+        pitching_rows
+    )
+
+    return {
+        'team_batting': len(batting_rows),
+        'team_pitching': len(pitching_rows)
+    }
