@@ -1,4 +1,4 @@
-from datetime import date
+﻿from datetime import date
 import json
 from shared.db import execute_many, fetch_all
 
@@ -68,3 +68,4 @@ def store_boxscore(game_pk: int, game_date: date, away_team_id: int, home_team_i
         rows.append({'game_pk': game_pk, 'team_id': team_id, 'opponent_team_id': opp_id, 'game_date': game_date, 'home_away': side, 'ab': as_int(batting.get('atBats')), 'r': as_int(batting.get('runs')), 'h': as_int(batting.get('hits')), 'doubles': as_int(batting.get('doubles')), 'triples': as_int(batting.get('triples')), 'hr': as_int(batting.get('homeRuns')), 'rbi': as_int(batting.get('rbi')), 'bb': as_int(batting.get('baseOnBalls')), 'ibb': as_int(batting.get('intentionalWalks')), 'hbp': as_int(batting.get('hitByPitch')), 'sf': as_int(batting.get('sacFlies')), 'so': as_int(batting.get('strikeOuts')), 'sb': as_int(batting.get('stolenBases')), 'cs': as_int(batting.get('caughtStealing')), 'lob': as_int(batting.get('leftOnBase')), 'tb': as_int(batting.get('totalBases')), 'pa': as_int(batting.get('plateAppearances'))})
     execute_many('''insert into core.team_boxscore_batting (game_pk,team_id,opponent_team_id,game_date,home_away,ab,r,h,doubles,triples,hr,rbi,bb,ibb,hbp,sf,so,sb,cs,lob,tb,pa,source_timestamp) values (%(game_pk)s,%(team_id)s,%(opponent_team_id)s,%(game_date)s,%(home_away)s,%(ab)s,%(r)s,%(h)s,%(doubles)s,%(triples)s,%(hr)s,%(rbi)s,%(bb)s,%(ibb)s,%(hbp)s,%(sf)s,%(so)s,%(sb)s,%(cs)s,%(lob)s,%(tb)s,%(pa)s,now()) on conflict (game_pk,team_id) do update set ab=excluded.ab,r=excluded.r,h=excluded.h,doubles=excluded.doubles,triples=excluded.triples,hr=excluded.hr,rbi=excluded.rbi,bb=excluded.bb,ibb=excluded.ibb,hbp=excluded.hbp,sf=excluded.sf,so=excluded.so,sb=excluded.sb,cs=excluded.cs,lob=excluded.lob,tb=excluded.tb,pa=excluded.pa,updated_at=now()''', rows)
     return {'team_batting': len(rows)}
+

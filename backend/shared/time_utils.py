@@ -1,4 +1,4 @@
-from datetime import datetime, date, timedelta
+﻿from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from .settings import get_settings
 
@@ -10,3 +10,4 @@ def today_local() -> date:
 
 def yesterday_local() -> date:
     return today_local() - timedelta(days=1)
+

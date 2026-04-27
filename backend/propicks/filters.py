@@ -1,9 +1,9 @@
-from datetime import date
+﻿from datetime import date
 import json
 from shared.db import fetch_all, execute_many
 
-def evaluate_offensive_edge(evaluation_date: date, window: str = 'L5') -> int:
-    profiles = fetch_all('select * from propicks.daily_team_profile where profile_date=%s and window=%s and metric_status=%s', (evaluation_date, window, 'OK_INTERNAL'))
+def evaluate_offensive_edge(evaluation_date: date, stat_window: str = 'L5') -> int:
+    profiles = fetch_all('select * from propicks.daily_team_profile where profile_date=%s and stat_window=%s and metric_status=%s', (evaluation_date, stat_window, 'OK_INTERNAL'))
     by_game = {}
     for p in profiles:
         by_game.setdefault(p['game_pk'], []).append(p)
@@ -33,3 +33,4 @@ def _score(team, opp, evaluation_date):
     label = 'STRONG_OFFENSIVE_EDGE' if score >= 75 else 'MODERATE_OFFENSIVE_EDGE' if score >= 50 else 'NO_EDGE'
     status = 'PRELIMINARY' if score >= 50 else 'PASS'
     return {'evaluation_date': evaluation_date, 'game_pk': team['game_pk'], 'team_id': team['team_id'], 'opponent_team_id': team['opponent_team_id'], 'projected_label': label, 'score': score, 'filters_passed': json.dumps(passed), 'filters_failed': json.dumps(failed), 'activation_status': status}
+

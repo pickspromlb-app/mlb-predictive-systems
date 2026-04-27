@@ -1,4 +1,4 @@
-create schema if not exists prohits;
+﻿create schema if not exists prohits;
 
 create table if not exists prohits.systems (
   system_id text primary key,
@@ -15,7 +15,7 @@ create table if not exists prohits.player_derived_stats (
   stat_date date not null,
   player_id integer not null,
   team_id integer references core.teams(team_id),
-  window text not null,
+  stat_window text not null,
   games_sample integer default 0,
   games_with_hit integer default 0,
   hit_rate numeric,
@@ -34,7 +34,7 @@ create table if not exists prohits.player_derived_stats (
   calculation_version text default 'prohits_player_derived_v1',
   metric_status text default 'OK_INTERNAL',
   calculated_at timestamptz default now(),
-  primary key (stat_date, player_id, window)
+  primary key (stat_date, player_id, stat_window)
 );
 
 create table if not exists prohits.lineup_validation (
@@ -72,3 +72,4 @@ create table if not exists prohits.hit_candidates (
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
+

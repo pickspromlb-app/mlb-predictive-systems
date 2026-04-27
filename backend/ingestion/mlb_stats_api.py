@@ -1,4 +1,4 @@
-import httpx
+﻿import httpx
 from datetime import date
 from typing import Any
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -23,3 +23,4 @@ class MLBStatsAPI:
 
     async def boxscore(self, game_pk: int) -> dict:
         return await self._get(f'/game/{game_pk}/boxscore')
+

@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import sys
 from datetime import date
 from ingestion.core_update import update_core_for_date
@@ -15,3 +15,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+

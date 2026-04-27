@@ -1,4 +1,4 @@
-from contextlib import contextmanager
+﻿from contextlib import contextmanager
 from typing import Iterable, Mapping, Any
 import psycopg
 from psycopg.rows import dict_row
@@ -39,3 +39,4 @@ def execute_many(query: str, rows: Iterable[Mapping[str, Any]]) -> int:
         with conn.cursor() as cur:
             cur.executemany(query, rows)
     return len(rows)
+

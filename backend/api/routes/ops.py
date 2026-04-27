@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+﻿from fastapi import APIRouter
 from shared.db import fetch_all, fetch_one
 router = APIRouter()
 
@@ -10,3 +10,4 @@ def latest_update():
 def job_runs(limit: int = 20):
     rows = fetch_all('select * from ops.job_runs order by started_at desc limit %s', (limit,))
     return {'count': len(rows), 'rows': rows}
+

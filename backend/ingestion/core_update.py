@@ -1,4 +1,4 @@
-from datetime import date
+﻿from datetime import date
 from ingestion.mlb_stats_api import MLBStatsAPI
 from ingestion.store_core import store_schedule, store_linescore, store_boxscore, games_for_date
 
@@ -17,3 +17,4 @@ async def update_core_for_date(target_date: date, include_boxscores: bool = True
         except Exception as exc:
             print(f'[WARN] game {game_pk} failed: {exc}')
     return {'games_found': games_found, 'games_processed': games_processed}
+

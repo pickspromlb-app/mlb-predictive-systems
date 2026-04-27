@@ -1,4 +1,4 @@
-create schema if not exists core;
+﻿create schema if not exists core;
 
 create table if not exists core.teams (
   team_id integer primary key,
@@ -216,3 +216,4 @@ create table if not exists core.metric_constants (
   updated_at timestamptz default now(),
   primary key (season, metric_name, constant_name, source)
 );
+

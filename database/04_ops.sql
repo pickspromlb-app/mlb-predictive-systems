@@ -1,4 +1,4 @@
-create schema if not exists ops;
+﻿create schema if not exists ops;
 
 create table if not exists ops.job_runs (
   run_id text primary key,
@@ -39,3 +39,4 @@ create table if not exists ops.data_quality_errors (
   payload jsonb,
   created_at timestamptz default now()
 );
+

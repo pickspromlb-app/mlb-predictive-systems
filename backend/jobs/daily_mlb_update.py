@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 from uuid import uuid4
 from shared.time_utils import today_local, yesterday_local
@@ -31,3 +31,4 @@ async def run():
 
 if __name__ == '__main__':
     print(asyncio.run(run()))
+

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+﻿from dataclasses import dataclass
 
 def safe_div(num, den):
     if num is None or den in (None, 0):
@@ -84,3 +84,4 @@ def pitching_metrics(row: dict, c: FipConstants | None = None) -> dict:
     k_rate = safe_div(so, bf)
     bb_rate = safe_div(bb, bf)
     return {'era': r4(era), 'whip': r4(whip), 'fip_internal': r4(fip), 'k_rate': r4(k_rate), 'bb_rate': r4(bb_rate), 'k_bb_rate': r4(None if k_rate is None or bb_rate is None else k_rate - bb_rate), 'k_per_9': r4(safe_div(so*9, ip)), 'bb_per_9': r4(safe_div(bb*9, ip)), 'hr_per_9': r4(safe_div(hr*9, ip)), 'sample_size_ip': r4(ip)}
+

@@ -1,4 +1,4 @@
-create schema if not exists propicks;
+﻿create schema if not exists propicks;
 
 create table if not exists propicks.systems (
   system_id text primary key,
@@ -17,7 +17,7 @@ create table if not exists propicks.daily_team_profile (
   opponent_team_id integer references core.teams(team_id),
   game_pk bigint references core.games(game_pk),
   home_away text,
-  window text not null,
+  stat_window text not null,
   games_sample integer not null default 0,
   runs_scored_avg numeric,
   runs_allowed_avg numeric,
@@ -56,7 +56,7 @@ create table if not exists propicks.daily_team_profile (
   calculated_at timestamptz default now(),
   created_at timestamptz default now(),
   updated_at timestamptz default now(),
-  primary key (profile_date, team_id, window)
+  primary key (profile_date, team_id, stat_window)
 );
 create index if not exists idx_propicks_profile_date on propicks.daily_team_profile(profile_date);
 
@@ -64,7 +64,7 @@ create table if not exists propicks.pitcher_derived_stats (
   stat_date date not null,
   pitcher_id integer not null,
   team_id integer references core.teams(team_id),
-  window text not null,
+  stat_window text not null,
   games_sample integer not null default 0,
   ip_outs integer default 0,
   era numeric,
@@ -80,7 +80,7 @@ create table if not exists propicks.pitcher_derived_stats (
   calculation_version text default 'pitcher_derived_v1',
   metric_status text default 'OK_INTERNAL',
   calculated_at timestamptz default now(),
-  primary key (stat_date, pitcher_id, window)
+  primary key (stat_date, pitcher_id, stat_window)
 );
 
 create table if not exists propicks.filter_definitions (
@@ -94,7 +94,7 @@ create table if not exists propicks.filter_definitions (
   metric_b text,
   operator_b text,
   value_b numeric,
-  window text default 'L5',
+  stat_window text default 'L5',
   weight numeric default 1.0,
   required boolean default false,
   status text default 'EXPERIMENTAL',
@@ -138,3 +138,4 @@ create table if not exists propicks.backtest_results (
   last_updated timestamptz default now(),
   unique(system_id, version, target_metric)
 );
+

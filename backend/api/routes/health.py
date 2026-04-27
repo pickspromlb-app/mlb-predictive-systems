@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+﻿from fastapi import APIRouter
 from shared.db import fetch_one
 router = APIRouter()
 
@@ -10,3 +10,4 @@ def health():
 def health_db():
     row = fetch_one('select now() as db_time')
     return {'status': 'ok', 'db_time': row['db_time'] if row else None}
+
