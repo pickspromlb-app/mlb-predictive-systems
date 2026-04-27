@@ -514,3 +514,83 @@ def totals_over_core_signals(
         'backtest': backtest,
         'rows': rows
     }
+
+@router.get('/totals-under-core/signals')
+def totals_under_core_signals(
+    analysis_date: date | None = Query(default=None)
+):
+    d = analysis_date or today_local()
+
+    rows = fetch_all(
+        '''
+        select
+          first_analysis_snapshot_id,
+          analysis_date,
+          game_pk,
+
+          away_team_id,
+          away_team_abbr,
+          away_team_name,
+
+          home_team_id,
+          home_team_abbr,
+          home_team_name,
+
+          totals_under_tier,
+
+          away_score,
+          home_score,
+          total_runs,
+          status,
+          detailed_state,
+          is_final,
+
+          hit_under8,
+          hit_under7,
+          hit_under6,
+
+          combined_rs_l5,
+          combined_ra_l5,
+          combined_whip_l5,
+          combined_era_l5,
+          combined_fip_l5
+        from propicks.totals_under_core_v1_signals
+        where analysis_date = %s
+        order by
+          case
+            when totals_under_tier = 'UNDER_ELITE' then 1
+            when totals_under_tier = 'UNDER_CORE' then 2
+            else 3
+          end,
+          combined_ra_l5 asc,
+          combined_whip_l5 asc
+        ''',
+        (d,)
+    )
+
+    backtest = fetch_all(
+        '''
+        select
+          system_id,
+          target_metric,
+          sample_size,
+          wins,
+          losses,
+          pushes,
+          success_rate,
+          last_updated
+        from propicks.backtest_results
+        where system_id in ('TOTALS_UNDER_CORE_V1', 'TOTALS_UNDER_ELITE_V1')
+          and version = 'v1.0'
+        order by system_id, target_metric
+        '''
+    )
+
+    return {
+        'systems': ['TOTALS_UNDER_CORE_V1', 'TOTALS_UNDER_ELITE_V1'],
+        'version': 'v1.0',
+        'analysis_date': d,
+        'count': len(rows),
+        'backtest': backtest,
+        'rows': rows
+    }
