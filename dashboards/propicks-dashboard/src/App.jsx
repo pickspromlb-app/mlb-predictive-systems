@@ -2,6 +2,7 @@
 import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://mlb-predictive-systems-production.up.railway.app'
+const INTERNAL_TOKEN = import.meta.env.VITE_INTERNAL_TOKEN || 'change_me'
 
 function pct(v) {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return '0.0%'
@@ -20,7 +21,7 @@ function label(metric) {
 }
 
 async function getJson(path) {
-  const res = await fetch(`${API_BASE}${path}`)
+  const res = await fetch(API_BASE + path)
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return res.json()
 }
@@ -42,7 +43,9 @@ export default function App() {
   const [summaries, setSummaries] = useState([])
   const [teamRuns, setTeamRuns] = useState([])
   const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [saveMessage, setSaveMessage] = useState('')
 
   async function load(d = date) {
     try {
@@ -53,7 +56,7 @@ export default function App() {
         getJson('/propicks/performance'),
         getJson('/propicks/audit/team-runs/global'),
         getJson('/propicks/postgame/summaries?limit=30'),
-        getJson(`/propicks/team-runs/today?analysis_date=${d}`)
+        getJson('/propicks/team-runs/today?analysis_date=' + d)
       ])
 
       setPerformance(p.rows || [])
@@ -64,6 +67,37 @@ export default function App() {
       setError(err.message || 'Error cargando API')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function saveAnalysis() {
+    try {
+      setSaving(true)
+      setError('')
+      setSaveMessage('')
+
+      const url = API_BASE + '/propicks/team-runs/save-analysis?analysis_date=' + date
+
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'x-internal-token': INTERNAL_TOKEN
+        }
+      })
+
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+
+      const data = await res.json()
+
+      setSaveMessage(
+        `Guardado: ${data.offensive_snapshots} offensive, ${data.team_3plus_snapshots} TR3, ${data.team_5plus_snapshots} TR5`
+      )
+
+      await load(date)
+    } catch (err) {
+      setError(err.message || 'Error guardando análisis')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -81,6 +115,7 @@ export default function App() {
 
     for (const row of teamRuns) {
       const key = `${row.game_pk}-${row.team_id}`
+
       if (!map.has(key)) {
         map.set(key, {
           key,
@@ -94,6 +129,7 @@ export default function App() {
           rows: []
         })
       }
+
       map.get(key).rows.push(row)
     }
 
@@ -118,13 +154,19 @@ export default function App() {
               load(e.target.value)
             }}
           />
+
           <button onClick={() => load(date)} disabled={loading}>
             {loading ? 'Actualizando...' : 'Actualizar'}
+          </button>
+
+          <button onClick={saveAnalysis} disabled={saving} className="save-button">
+            {saving ? 'Guardando...' : 'Guardar análisis'}
           </button>
         </div>
       </header>
 
       {error && <div className="error-box">Error API: {error}</div>}
+      {saveMessage && <div className="success-box">{saveMessage}</div>}
 
       <section className="grid stats-grid">
         <StatCard
@@ -132,16 +174,19 @@ export default function App() {
           value={pct(total.success_rate)}
           sub={`${record(total.wins, total.losses)} · muestra ${total.sample_size ?? 0}`}
         />
+
         <StatCard
           title="Team Runs 3+"
           value={pct(tr3.success_rate)}
           sub={`${record(tr3.wins, tr3.losses)} · muestra ${tr3.sample_size ?? 0}`}
         />
+
         <StatCard
           title="Team Runs 5+"
           value={pct(tr5.success_rate)}
           sub={`${record(tr5.wins, tr5.losses)} · muestra ${tr5.sample_size ?? 0}`}
         />
+
         <StatCard
           title="Último resumen"
           value={last ? pct(last.success_rate) : 'Sin datos'}
@@ -207,6 +252,7 @@ export default function App() {
                   <strong>{s.summary_date}</strong>
                   <span>{s.total_records} análisis</span>
                 </div>
+
                 <div className="summary-record">
                   <span>{record(s.wins, s.losses)}</span>
                   <span className={Number(s.success_rate) >= 0.65 ? 'pill good' : 'pill weak'}>
@@ -225,6 +271,7 @@ export default function App() {
             <h2>Análisis Team Runs por fecha</h2>
             <p>Fecha seleccionada: {date}. Equipos que activaron Pressure Filter v1.</p>
           </div>
+
           <span className="count-badge">{teamRuns.length} registros</span>
         </div>
 
@@ -239,6 +286,7 @@ export default function App() {
                     <span className="game-line">{game.away_team} @ {game.home_team}</span>
                     <h3>{game.team} vs {game.opponent}</h3>
                   </div>
+
                   <div className="score-box">
                     {game.away_runs ?? '-'} - {game.home_runs ?? '-'}
                   </div>
@@ -251,6 +299,7 @@ export default function App() {
                         <strong>{label(row.target_metric)}</strong>
                         <span>Score {Number(row.score).toFixed(1)} · Tier {row.confidence_tier}</span>
                       </div>
+
                       <span className={`result-pill ${row.success === true ? 'win' : row.success === false ? 'loss' : 'pending'}`}>
                         {row.success === true ? 'WIN' : row.success === false ? 'LOSS' : 'PENDING'}
                       </span>
@@ -263,10 +312,12 @@ export default function App() {
                     <span>Opp WHIP L5</span>
                     <strong>{game.rows?.[0]?.metrics_snapshot?.opponent_whip_l5 ?? 'NA'}</strong>
                   </div>
+
                   <div>
                     <span>Opp RA Avg L5</span>
                     <strong>{game.rows?.[0]?.metrics_snapshot?.opponent_runs_allowed_avg_l5 ?? 'NA'}</strong>
                   </div>
+
                   <div>
                     <span>Team wRC+ L5</span>
                     <strong>{game.rows?.[0]?.metrics_snapshot?.team_wrc_plus_l5 ?? 'NA'}</strong>

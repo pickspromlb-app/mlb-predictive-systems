@@ -412,3 +412,17 @@ td {
     width: 100%;
   }
 }
+
+.save-button {
+  background: linear-gradient(135deg, #16a34a, #22c55e);
+}
+
+.success-box {
+  margin-top: 18px;
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  background: rgba(20, 83, 45, 0.35);
+  color: #bbf7d0;
+  border-radius: 16px;
+  padding: 14px 16px;
+  font-weight: 800;
+}
