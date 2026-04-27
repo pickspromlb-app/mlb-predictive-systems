@@ -7,26 +7,30 @@ const API_BASE =
 
 const INTERNAL_TOKEN = import.meta.env.VITE_INTERNAL_TOKEN || 'change_me'
 
-/* ----------------------------- Helpers ----------------------------- */
+/* Endpoint para Save Analysis. Cambiar aquí cuando esté listo el genérico. */
+const SAVE_ANALYSIS_ENDPOINT = '/propicks/team-runs/save-analysis'
+// Cuando esté disponible, cambiar a: '/propicks/save-daily-analysis'
+
+/* ============================================================
+   Helpers
+   ============================================================ */
 
 function todayISO() {
   const d = new Date()
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+    d.getDate()
+  ).padStart(2, '0')}`
 }
 
 function pct(v) {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return '–'
   const n = Number(v)
-  // Soporta tanto 0.918 como 91.8
   const value = n <= 1 ? n * 100 : n
-  return `${value.toFixed(2)}%`
+  return `${value.toFixed(1)}%`
 }
 
 function num(v, decimals = 2) {
-  if (v === null || v === undefined || Number.isNaN(Number(v))) return '–'
+  if (v === null || v === undefined || v === '' || Number.isNaN(Number(v))) return '–'
   return Number(v).toFixed(decimals)
 }
 
@@ -46,12 +50,217 @@ function rateClass(rate) {
 
 async function getJson(path) {
   const res = await fetch(API_BASE + path)
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText} – ${path}`)
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return res.json()
 }
 
-/* ----------------------------- Static backtest ----------------------------- */
-/* Datos de respaldo si /propicks/performance no devuelve nada útil */
+async function postJson(path) {
+  const res = await fetch(API_BASE + path, {
+    method: 'POST',
+    headers: { 'x-internal-token': INTERNAL_TOKEN }
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json()
+}
+
+/* ============================================================
+   Pick interpretation per market
+   ============================================================ */
+
+function interpretTeamRuns(signal) {
+  const tier = (signal.team_runs_tier || '').toString().toUpperCase()
+  const team = signal.team_abbr || signal.team || '?'
+  const opp = signal.opponent_abbr || signal.opponent || '?'
+  const teamFull = signal.team_name || ''
+  const oppFull = signal.opponent_name || ''
+
+  const is5plus = tier.includes('5PLUS')
+  const isPower = tier.includes('POWER')
+
+  const target = is5plus ? '5' : '3'
+  const strengthLabel = isPower ? 'Fuerte' : 'Core'
+  const strengthCls = isPower ? 'strength-strong' : 'strength-core'
+
+  const fullLine = teamFull && oppFull ? `${teamFull} vs ${oppFull}` : null
+
+  return {
+    badge: 'Team Runs',
+    title: `${team} más de ${target} carreras`,
+    subtitle: `Rival: ${opp} · Señal ${strengthLabel.toLowerCase()}`,
+    fullLine,
+    objectives: is5plus
+      ? [
+          { label: 'Objetivo principal', value: '5+ carreras del equipo' },
+          { label: 'Objetivo secundario', value: '3+ carreras del equipo' }
+        ]
+      : [{ label: 'Objetivo principal', value: '3+ carreras del equipo' }],
+    techCode: tier,
+    strengthLabel,
+    strengthCls,
+    metrics: [
+      { label: 'Team RS L5', value: signal.team_rs_l5 },
+      { label: 'Opp RA L5', value: signal.opp_ra_l5 },
+      { label: 'Opp WHIP L5', value: signal.opp_whip_l5 },
+      { label: 'Opp ERA L5', value: signal.opp_era_l5 }
+    ],
+    status: deriveTeamRunsStatus(signal, is5plus)
+  }
+}
+
+function deriveTeamRunsStatus(signal, is5plus) {
+  const isFinal = signal.is_final === true
+  const primary = is5plus ? signal.hit_5plus : signal.hit_3plus
+  if (primary === true) return { kind: 'win', label: 'Win' }
+  if (primary === false) return { kind: 'loss', label: 'Loss' }
+  if (isFinal) return { kind: 'final', label: 'Final' }
+  return { kind: 'pending', label: 'Pending' }
+}
+
+function interpretTotalsOver(signal) {
+  const tier = (signal.totals_over_tier || '').toString().toUpperCase()
+  const away = signal.away_team_abbr || signal.away_team || '?'
+  const home = signal.home_team_abbr || signal.home_team || '?'
+
+  let target = '8'
+  if (tier.includes('10PLUS')) target = '10'
+  else if (tier.includes('9PLUS')) target = '9'
+  else if (tier.includes('8PLUS')) target = '8'
+
+  const objectives = []
+  if (target === '8') {
+    objectives.push({ label: 'Objetivo principal', value: '8+ carreras del juego' })
+    objectives.push({ label: 'Objetivo secundario', value: '9+ carreras del juego' })
+  } else if (target === '9') {
+    objectives.push({ label: 'Objetivo principal', value: '9+ carreras del juego' })
+    objectives.push({ label: 'Objetivo secundario', value: '10+ carreras del juego' })
+  } else if (target === '10') {
+    objectives.push({ label: 'Objetivo principal', value: '10+ carreras del juego' })
+  }
+
+  return {
+    badge: 'Totals Over',
+    title: `${away} @ ${home} más de ${target} carreras`,
+    subtitle: 'Total del juego · ambiente alto de carreras',
+    fullLine: null,
+    objectives,
+    techCode: tier,
+    strengthLabel: 'Core',
+    strengthCls: 'strength-core',
+    metrics: [
+      { label: 'Combined ERA L5', value: signal.combined_era_l5 },
+      { label: 'Combined WHIP L5', value: signal.combined_whip_l5 },
+      { label: 'Combined RA L5', value: signal.combined_ra_l5 },
+      { label: 'Combined RS L5', value: signal.combined_rs_l5 }
+    ],
+    status: deriveOverStatus(signal, target)
+  }
+}
+
+function deriveOverStatus(signal, target) {
+  const isFinal = signal.is_final === true
+  let primary
+  if (target === '8') primary = signal.hit_8plus
+  else if (target === '9') primary = signal.hit_9plus
+  else if (target === '10') primary = signal.hit_10plus
+  if (primary === true) return { kind: 'win', label: 'Win' }
+  if (primary === false) return { kind: 'loss', label: 'Loss' }
+  if (isFinal) return { kind: 'final', label: 'Final' }
+  return { kind: 'pending', label: 'Pending' }
+}
+
+function interpretTotalsUnder(signal) {
+  const tier = (signal.totals_under_tier || '').toString().toUpperCase()
+  const away = signal.away_team_abbr || signal.away_team || '?'
+  const home = signal.home_team_abbr || signal.home_team || '?'
+
+  const isElite = tier.includes('ELITE')
+
+  // ELITE: el rango sugerido es 7/8
+  const titleSuffix = isElite ? 'menos de 7/8 carreras' : 'menos de 8 carreras'
+  const subtitle = isElite
+    ? 'Señal elite · ambiente muy bajo'
+    : 'Total del juego · ambiente bajo de carreras'
+
+  const objectives = isElite
+    ? [
+        { label: 'Objetivo principal', value: 'Under 8' },
+        { label: 'Objetivo secundario', value: 'Under 7' }
+      ]
+    : [{ label: 'Objetivo principal', value: 'Under 8' }]
+
+  return {
+    badge: 'Totals Under',
+    title: `${away} @ ${home} ${titleSuffix}`,
+    subtitle,
+    fullLine: null,
+    objectives,
+    techCode: tier,
+    strengthLabel: isElite ? 'Elite' : 'Core',
+    strengthCls: isElite ? 'strength-elite' : 'strength-core',
+    metrics: [
+      { label: 'Combined RA L5', value: signal.combined_ra_l5 },
+      { label: 'Combined WHIP L5', value: signal.combined_whip_l5 },
+      { label: 'Combined ERA L5', value: signal.combined_era_l5 },
+      { label: 'Combined RS L5', value: signal.combined_rs_l5 }
+    ],
+    status: deriveUnderStatus(signal, isElite)
+  }
+}
+
+function deriveUnderStatus(signal, isElite) {
+  const isFinal = signal.is_final === true
+  const primary = signal.hit_under8
+  if (primary === true) return { kind: 'win', label: 'Win' }
+  if (primary === false) return { kind: 'loss', label: 'Loss' }
+  if (isFinal) return { kind: 'final', label: 'Final' }
+  return { kind: 'pending', label: 'Pending' }
+}
+
+function interpretMoneyline(signal) {
+  const tier = (signal.moneyline_tier || '').toString().toUpperCase()
+  const team = signal.team_abbr || signal.team || '?'
+  const isHome = tier.includes('HOME')
+  const sideLabel = isHome ? 'Local' : 'Visitante'
+
+  return {
+    badge: 'Moneyline',
+    title: `${team} Moneyline`,
+    subtitle: `${sideLabel} · señal core`,
+    fullLine: null,
+    objectives: [{ label: 'Objetivo principal', value: `Victoria de ${team}` }],
+    techCode: tier,
+    strengthLabel: 'Core',
+    strengthCls: 'strength-core',
+    metrics: [
+      { label: 'Log5 Home Prob', value: signal.log5_home_prob, decimals: 3 },
+      { label: 'WHIP Edge', value: signal.whip_edge },
+      { label: 'RA Edge', value: signal.ra_edge },
+      { label: 'ERA Edge', value: signal.era_edge }
+    ],
+    status: deriveMlStatus(signal)
+  }
+}
+
+function deriveMlStatus(signal) {
+  const isFinal = signal.is_final === true
+  const won = signal.won_moneyline
+  if (won === true) return { kind: 'win', label: 'Win' }
+  if (won === false) return { kind: 'loss', label: 'Loss' }
+  if (isFinal) return { kind: 'final', label: 'Final' }
+  return { kind: 'pending', label: 'Pending' }
+}
+
+function interpret(variant, signal) {
+  if (variant === 'team_runs') return interpretTeamRuns(signal)
+  if (variant === 'totals_over') return interpretTotalsOver(signal)
+  if (variant === 'totals_under') return interpretTotalsUnder(signal)
+  if (variant === 'moneyline') return interpretMoneyline(signal)
+  return null
+}
+
+/* ============================================================
+   Static fallback for backtest (only if endpoint returns empty)
+   ============================================================ */
 
 const STATIC_BACKTEST = [
   {
@@ -65,7 +274,7 @@ const STATIC_BACKTEST = [
   {
     system_id: 'TEAM_RUNS_CORE_V1',
     rows: [
-      { target_metric: '3+ carreras', sample_size: 187, wins: 164, losses: 23, success_rate: 0.8770 },
+      { target_metric: '3+ carreras', sample_size: 187, wins: 164, losses: 23, success_rate: 0.877 },
       { target_metric: '5+ carreras', sample_size: 187, wins: 129, losses: 58, success_rate: 0.6898 }
     ]
   },
@@ -95,9 +304,9 @@ const STATIC_BACKTEST = [
   {
     system_id: 'TOTALS_UNDER_ELITE_V1',
     rows: [
-      { target_metric: 'Under 8', sample_size: 40, wins: 34, losses: 6, success_rate: 0.8500 },
-      { target_metric: 'Under 7', sample_size: 40, wins: 29, losses: 11, success_rate: 0.7250 },
-      { target_metric: 'Under 6', sample_size: 40, wins: 25, losses: 15, success_rate: 0.6250 }
+      { target_metric: 'Under 8', sample_size: 40, wins: 34, losses: 6, success_rate: 0.85 },
+      { target_metric: 'Under 7', sample_size: 40, wins: 29, losses: 11, success_rate: 0.725 },
+      { target_metric: 'Under 6', sample_size: 40, wins: 25, losses: 15, success_rate: 0.625 }
     ]
   }
 ]
@@ -105,252 +314,174 @@ const STATIC_BACKTEST = [
 const SYSTEM_COLOR = {
   MONEYLINE_CORE_V1: 'sys-blue',
   TEAM_RUNS_CORE_V1: 'sys-green',
-  TEAM_RUNS_POWER_V1: 'sys-green',
+  TEAM_RUNS_POWER_V1: 'sys-emerald',
   TOTALS_OVER_CORE_V1: 'sys-orange',
   TOTALS_UNDER_CORE_V1: 'sys-purple',
-  TOTALS_UNDER_ELITE_V1: 'sys-purple'
+  TOTALS_UNDER_ELITE_V1: 'sys-violet'
 }
 
-/* ----------------------------- UI Atoms ----------------------------- */
+const TABS = [
+  { id: 'moneyline', label: 'Moneyline', short: 'ML', color: 'sys-blue' },
+  { id: 'team_runs', label: 'Team Runs', short: 'TR', color: 'sys-green' },
+  { id: 'totals_over', label: 'Totals Over', short: 'OV', color: 'sys-orange' },
+  { id: 'totals_under', label: 'Totals Under', short: 'UN', color: 'sys-purple' }
+]
+
+/* ============================================================
+   Atoms
+   ============================================================ */
 
 function Spinner() {
   return <span className="spinner" aria-hidden="true" />
 }
 
-function StatusPill({ status }) {
-  const s = (status || 'PENDING').toUpperCase()
-  const cls = s === 'WIN' ? 'win' : s === 'LOSS' ? 'loss' : 'pending'
-  return <span className={`status-pill ${cls}`}>{s}</span>
-}
-
-function TierBadge({ tier, color }) {
-  if (!tier) return null
-  return <span className={`tier-badge ${color}`}>{tier}</span>
-}
-
-function MetricRow({ label, value, decimals = 2 }) {
-  return (
-    <div className="metric-row">
-      <span className="metric-label">{label}</span>
-      <span className="metric-value">{num(value, decimals)}</span>
-    </div>
-  )
-}
-
-function StatTile({ label, value, accent, sub }) {
+function StatTile({ label, value, accent, sub, icon }) {
   return (
     <div className={`stat-tile ${accent || ''}`}>
-      <div className="stat-tile-label">{label}</div>
+      <div className="stat-tile-top">
+        <span className="stat-tile-label">{label}</span>
+        {icon && <span className="stat-tile-icon">{icon}</span>}
+      </div>
       <div className="stat-tile-value">{value}</div>
       {sub && <div className="stat-tile-sub">{sub}</div>}
     </div>
   )
 }
 
-function EmptyState({ title, message }) {
+function StatusChip({ status }) {
+  if (!status) return null
+  const cls = `status-chip s-${status.kind}`
+  const dot = status.kind === 'pending' ? '●' : status.kind === 'win' ? '✓' : status.kind === 'loss' ? '✗' : '◼'
   return (
-    <div className="empty-state">
-      <div className="empty-icon">∅</div>
-      <div className="empty-title">{title}</div>
-      <div className="empty-msg">{message}</div>
-    </div>
+    <span className={cls}>
+      <span className="status-dot">{dot}</span>
+      {status.label}
+    </span>
   )
 }
+
+/* ============================================================
+   Pick Card (autocontained, market-aware)
+   ============================================================ */
+
+function PickCard({ variant, signal }) {
+  const data = interpret(variant, signal)
+  if (!data) return null
+
+  const colorClass = `sys-${
+    variant === 'team_runs'
+      ? 'green'
+      : variant === 'moneyline'
+      ? 'blue'
+      : variant === 'totals_over'
+      ? 'orange'
+      : 'purple'
+  }`
+
+  return (
+    <article className={`pick-card ${colorClass}`}>
+      {/* Top bar: badge market + status */}
+      <div className="pick-top-bar">
+        <span className={`market-badge ${colorClass}`}>{data.badge}</span>
+        <StatusChip status={data.status} />
+      </div>
+
+      {/* Title — protagonista */}
+      <div className="pick-title-block">
+        <h3 className="pick-title">{data.title}</h3>
+        <p className="pick-subtitle">{data.subtitle}</p>
+        {data.fullLine && <p className="pick-fullline">{data.fullLine}</p>}
+      </div>
+
+      {/* Strength tag */}
+      <div className="strength-row">
+        <span className={`strength-tag ${data.strengthCls}`}>
+          <span className="strength-dot" />
+          {data.strengthLabel}
+        </span>
+        <span className="tech-code" title="Código técnico de la señal">{data.techCode}</span>
+      </div>
+
+      {/* Metrics */}
+      <div className="pick-metrics">
+        {data.metrics.map((m) => (
+          <div key={m.label} className="metric-cell">
+            <span className="metric-cell-label">{m.label}</span>
+            <span className="metric-cell-value">{num(m.value, m.decimals ?? 2)}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Objectives footer */}
+      <div className="objectives">
+        {data.objectives.map((o) => (
+          <div key={o.label} className="objective-row">
+            <span className="objective-label">{o.label}</span>
+            <span className="objective-value">{o.value}</span>
+          </div>
+        ))}
+      </div>
+    </article>
+  )
+}
+
+/* ============================================================
+   Skeleton & Empty
+   ============================================================ */
 
 function SkeletonCard() {
   return (
     <div className="skeleton-card">
-      <div className="sk-bar w-40" />
-      <div className="sk-bar w-70" />
-      <div className="sk-row">
-        <div className="sk-bar w-30" />
-        <div className="sk-bar w-30" />
-        <div className="sk-bar w-30" />
+      <div className="sk-bar" style={{ width: '30%' }} />
+      <div className="sk-bar" style={{ width: '85%', height: '24px' }} />
+      <div className="sk-bar" style={{ width: '60%', height: '14px' }} />
+      <div className="sk-grid">
+        <div className="sk-bar" />
+        <div className="sk-bar" />
+        <div className="sk-bar" />
+        <div className="sk-bar" />
       </div>
     </div>
   )
 }
 
-/* ----------------------------- Signal Cards ----------------------------- */
-
-function MoneylineCard({ signal }) {
-  const team = signal.team_abbr || signal.team || '?'
-  const opp = signal.opponent_abbr || signal.opponent || '?'
+function EmptyState({ variant }) {
+  const tab = TABS.find((t) => t.id === variant)
   return (
-    <div className="signal-card sys-blue">
-      <div className="signal-card-header">
-        <div className="matchup">
-          <span className="team-abbr">{team}</span>
-          <span className="vs">vs</span>
-          <span className="team-abbr opp">{opp}</span>
-        </div>
-        <TierBadge tier={signal.moneyline_tier} color="sys-blue" />
+    <div className="empty-state">
+      <div className={`empty-icon ${tab?.color || ''}`}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01" />
+        </svg>
       </div>
-
-      <div className="signal-metrics">
-        <MetricRow label="Log5 Home Prob" value={signal.log5_home_prob} decimals={3} />
-        <MetricRow label="WHIP Edge" value={signal.whip_edge} />
-        <MetricRow label="RA Edge" value={signal.ra_edge} />
-        <MetricRow label="ERA Edge" value={signal.era_edge} />
-      </div>
-
-      <div className="signal-footer">
-        <StatusPill status={signal.status} />
+      <div className="empty-title">No hay señales {tab?.label}</div>
+      <div className="empty-msg">
+        El sistema no detectó oportunidades para esta categoría en la fecha seleccionada.
       </div>
     </div>
   )
 }
 
-function TeamRunsCard({ signal }) {
-  const team = signal.team_abbr || signal.team || '?'
-  const opp = signal.opponent_abbr || signal.opponent || '?'
-  return (
-    <div className="signal-card sys-green">
-      <div className="signal-card-header">
-        <div className="matchup">
-          <span className="team-abbr">{team}</span>
-          <span className="vs">vs</span>
-          <span className="team-abbr opp">{opp}</span>
-        </div>
-        <TierBadge tier={signal.team_runs_tier} color="sys-green" />
-      </div>
-
-      <div className="signal-metrics">
-        <MetricRow label="Team RS L5" value={signal.team_rs_l5} />
-        <MetricRow label="Opp RA L5" value={signal.opp_ra_l5} />
-        <MetricRow label="Opp WHIP L5" value={signal.opp_whip_l5} />
-        <MetricRow label="Opp ERA L5" value={signal.opp_era_l5} />
-      </div>
-
-      {(signal.hit_3plus !== undefined || signal.hit_5plus !== undefined) && (
-        <div className="hit-row">
-          {signal.hit_3plus !== undefined && (
-            <span className={`hit-pill ${signal.hit_3plus ? 'hit' : 'miss'}`}>
-              3+ {signal.hit_3plus ? '✓' : '✗'}
-            </span>
-          )}
-          {signal.hit_5plus !== undefined && (
-            <span className={`hit-pill ${signal.hit_5plus ? 'hit' : 'miss'}`}>
-              5+ {signal.hit_5plus ? '✓' : '✗'}
-            </span>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function TotalsOverCard({ signal }) {
-  const away = signal.away_team_abbr || signal.away_team || '?'
-  const home = signal.home_team_abbr || signal.home_team || '?'
-  return (
-    <div className="signal-card sys-orange">
-      <div className="signal-card-header">
-        <div className="matchup">
-          <span className="team-abbr">{away}</span>
-          <span className="vs">@</span>
-          <span className="team-abbr">{home}</span>
-        </div>
-        <TierBadge tier={signal.totals_over_tier} color="sys-orange" />
-      </div>
-
-      <div className="signal-metrics">
-        <MetricRow label="Combined ERA L5" value={signal.combined_era_l5} />
-        <MetricRow label="Combined WHIP L5" value={signal.combined_whip_l5} />
-        <MetricRow label="Combined RA L5" value={signal.combined_ra_l5} />
-        <MetricRow label="Combined RS L5" value={signal.combined_rs_l5} />
-      </div>
-
-      {(signal.hit_8plus !== undefined ||
-        signal.hit_9plus !== undefined ||
-        signal.hit_10plus !== undefined) && (
-        <div className="hit-row">
-          {signal.hit_8plus !== undefined && (
-            <span className={`hit-pill ${signal.hit_8plus ? 'hit' : 'miss'}`}>
-              8+ {signal.hit_8plus ? '✓' : '✗'}
-            </span>
-          )}
-          {signal.hit_9plus !== undefined && (
-            <span className={`hit-pill ${signal.hit_9plus ? 'hit' : 'miss'}`}>
-              9+ {signal.hit_9plus ? '✓' : '✗'}
-            </span>
-          )}
-          {signal.hit_10plus !== undefined && (
-            <span className={`hit-pill ${signal.hit_10plus ? 'hit' : 'miss'}`}>
-              10+ {signal.hit_10plus ? '✓' : '✗'}
-            </span>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function TotalsUnderCard({ signal }) {
-  const away = signal.away_team_abbr || signal.away_team || '?'
-  const home = signal.home_team_abbr || signal.home_team || '?'
-  return (
-    <div className="signal-card sys-purple">
-      <div className="signal-card-header">
-        <div className="matchup">
-          <span className="team-abbr">{away}</span>
-          <span className="vs">@</span>
-          <span className="team-abbr">{home}</span>
-        </div>
-        <TierBadge tier={signal.totals_under_tier} color="sys-purple" />
-      </div>
-
-      <div className="signal-metrics">
-        <MetricRow label="Combined RA L5" value={signal.combined_ra_l5} />
-        <MetricRow label="Combined WHIP L5" value={signal.combined_whip_l5} />
-        <MetricRow label="Combined ERA L5" value={signal.combined_era_l5} />
-        <MetricRow label="Combined RS L5" value={signal.combined_rs_l5} />
-      </div>
-
-      {(signal.hit_under8 !== undefined ||
-        signal.hit_under7 !== undefined ||
-        signal.hit_under6 !== undefined) && (
-        <div className="hit-row">
-          {signal.hit_under8 !== undefined && (
-            <span className={`hit-pill ${signal.hit_under8 ? 'hit' : 'miss'}`}>
-              U8 {signal.hit_under8 ? '✓' : '✗'}
-            </span>
-          )}
-          {signal.hit_under7 !== undefined && (
-            <span className={`hit-pill ${signal.hit_under7 ? 'hit' : 'miss'}`}>
-              U7 {signal.hit_under7 ? '✓' : '✗'}
-            </span>
-          )}
-          {signal.hit_under6 !== undefined && (
-            <span className={`hit-pill ${signal.hit_under6 ? 'hit' : 'miss'}`}>
-              U6 {signal.hit_under6 ? '✓' : '✗'}
-            </span>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-/* ----------------------------- Main App ----------------------------- */
-
-const TABS = [
-  { id: 'moneyline', label: 'Moneyline', color: 'sys-blue' },
-  { id: 'team_runs', label: 'Team Runs', color: 'sys-green' },
-  { id: 'totals_over', label: 'Totals Over', color: 'sys-orange' },
-  { id: 'totals_under', label: 'Totals Under', color: 'sys-purple' }
-]
+/* ============================================================
+   Main App
+   ============================================================ */
 
 export default function App() {
   const [date, setDate] = useState(todayISO())
   const [signalsData, setSignalsData] = useState(null)
   const [performance, setPerformance] = useState([])
   const [summaries, setSummaries] = useState([])
+
   const [loading, setLoading] = useState(false)
   const [running, setRunning] = useState(false)
+  const [saving, setSaving] = useState(false)
+
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+
   const [activeTab, setActiveTab] = useState('team_runs')
+  const [gamesProcessed, setGamesProcessed] = useState(null)
 
   const loadSignals = useCallback(async (d) => {
     setLoading(true)
@@ -358,14 +489,12 @@ export default function App() {
     try {
       const data = await getJson(`/propicks/signals/today?analysis_date=${d}`)
       setSignalsData(data)
-      // Auto-select the tab with the most signals
       const counts = data?.counts || {}
-      const tabWithMost = TABS.reduce((best, t) =>
-        (counts[t.id] || 0) > (counts[best.id] || 0) ? t : best
-      , TABS[0])
-      if ((counts[tabWithMost.id] || 0) > 0) {
-        setActiveTab(tabWithMost.id)
-      }
+      const tabWithMost = TABS.reduce(
+        (best, t) => ((counts[t.id] || 0) > (counts[best.id] || 0) ? t : best),
+        TABS[0]
+      )
+      if ((counts[tabWithMost.id] || 0) > 0) setActiveTab(tabWithMost.id)
     } catch (err) {
       setError(err.message || 'Error cargando señales')
       setSignalsData(null)
@@ -375,21 +504,17 @@ export default function App() {
   }, [])
 
   const loadAuxiliary = useCallback(async () => {
-    try {
-      const [perf, summ] = await Promise.allSettled([
-        getJson('/propicks/performance'),
-        getJson('/propicks/postgame/summaries?limit=30')
-      ])
-      if (perf.status === 'fulfilled') {
-        const rows = perf.value?.rows || perf.value || []
-        setPerformance(Array.isArray(rows) ? rows : [])
-      }
-      if (summ.status === 'fulfilled') {
-        const rows = summ.value?.rows || summ.value || []
-        setSummaries(Array.isArray(rows) ? rows : [])
-      }
-    } catch {
-      /* silencioso, son auxiliares */
+    const [perf, summ] = await Promise.allSettled([
+      getJson('/propicks/performance'),
+      getJson('/propicks/postgame/summaries?limit=30')
+    ])
+    if (perf.status === 'fulfilled') {
+      const rows = perf.value?.rows || perf.value || []
+      setPerformance(Array.isArray(rows) ? rows : [])
+    }
+    if (summ.status === 'fulfilled') {
+      const rows = summ.value?.rows || summ.value || []
+      setSummaries(Array.isArray(rows) ? rows : [])
     }
   }, [])
 
@@ -398,21 +523,16 @@ export default function App() {
     setError('')
     setSuccess('')
     try {
-      const url = `${API_BASE}/propicks/run-daily?analysis_date=${date}`
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'x-internal-token': INTERNAL_TOKEN }
-      })
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-      const data = await res.json()
+      const data = await postJson(`/propicks/run-daily?analysis_date=${date}`)
       const c = data?.counts || {}
+      if (typeof c.games === 'number') setGamesProcessed(c.games)
+      const total =
+        (c.moneyline_signals ?? 0) +
+        (c.team_runs_signals ?? 0) +
+        (c.totals_over_signals ?? 0) +
+        (c.totals_under_signals ?? 0)
       setSuccess(
-        `✓ Análisis completado · ${c.games ?? 0} juegos · ${
-          (c.moneyline_signals ?? 0) +
-          (c.team_runs_signals ?? 0) +
-          (c.totals_over_signals ?? 0) +
-          (c.totals_under_signals ?? 0)
-        } señales`
+        `Análisis ejecutado · ${c.games ?? 0} juegos procesados · ${total} señales generadas`
       )
       await loadSignals(date)
       await loadAuxiliary()
@@ -423,16 +543,34 @@ export default function App() {
     }
   }
 
+  async function saveAnalysis() {
+    setSaving(true)
+    setError('')
+    setSuccess('')
+    try {
+      const data = await postJson(`${SAVE_ANALYSIS_ENDPOINT}?analysis_date=${date}`)
+      const off = data?.offensive_snapshots ?? data?.snapshots ?? 0
+      const tr3 = data?.team_3plus_snapshots ?? 0
+      const tr5 = data?.team_5plus_snapshots ?? 0
+      setSuccess(
+        `Análisis guardado · ${off} offensive · ${tr3} TR3 · ${tr5} TR5`
+      )
+    } catch (err) {
+      setError(err.message || 'Error guardando análisis')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   useEffect(() => {
     loadSignals(date)
     loadAuxiliary()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Auto-clear success messages
   useEffect(() => {
     if (!success) return
-    const t = setTimeout(() => setSuccess(''), 5000)
+    const t = setTimeout(() => setSuccess(''), 6000)
     return () => clearTimeout(t)
   }, [success])
 
@@ -448,19 +586,18 @@ export default function App() {
     totals_over: [],
     totals_under: []
   }
-
   const totalSignals =
     (counts.moneyline || 0) +
     (counts.team_runs || 0) +
     (counts.totals_over || 0) +
     (counts.totals_under || 0)
 
-  // Use API performance if non-empty, otherwise static backtest
+  /* Backtest: usar el del endpoint primero. Si está vacío, fallback estático. */
   const backtestGroups = useMemo(() => {
-    if (performance && performance.length > 0) {
-      // Group by system_id if API returns flat rows
+    const apiBacktest = signalsData?.backtest
+    if (Array.isArray(apiBacktest) && apiBacktest.length > 0) {
       const map = new Map()
-      for (const r of performance) {
+      for (const r of apiBacktest) {
         const sid = r.system_id || 'PERFORMANCE'
         if (!map.has(sid)) map.set(sid, { system_id: sid, rows: [] })
         map.get(sid).rows.push(r)
@@ -468,121 +605,169 @@ export default function App() {
       return Array.from(map.values())
     }
     return STATIC_BACKTEST
-  }, [performance])
+  }, [signalsData])
+
+  const usingFallbackBacktest =
+    !signalsData?.backtest || (Array.isArray(signalsData.backtest) && signalsData.backtest.length === 0)
 
   const activeSignals = signals[activeTab] || []
-  const renderSignal = (s, i) => {
-    const key = s.id || `${activeTab}-${i}`
-    if (activeTab === 'moneyline') return <MoneylineCard key={key} signal={s} />
-    if (activeTab === 'team_runs') return <TeamRunsCard key={key} signal={s} />
-    if (activeTab === 'totals_over') return <TotalsOverCard key={key} signal={s} />
-    if (activeTab === 'totals_under') return <TotalsUnderCard key={key} signal={s} />
-    return null
-  }
+  const anyBusy = loading || running || saving
 
   return (
     <div className="app">
-      {/* Header */}
+      {/* HEADER */}
       <header className="hero">
-        <div className="hero-left">
-          <div className="brand-mark">
-            <span className="brand-dot" />
-            <span className="brand-text">PROPICKS · MLB</span>
-          </div>
-          <h1 className="hero-title">Predictive Signals Dashboard</h1>
-          <p className="hero-sub">
-            {signalsData?.system || 'ProPicksMLB'} · {signalsData?.version || 'v1.0'} · 6 sistemas estadísticos activos
-          </p>
-        </div>
-
-        <div className="hero-right">
-          <div className="control-group">
-            <label className="control-label">Analysis Date</label>
-            <input
-              className="date-input"
-              type="date"
-              value={date}
-              onChange={(e) => {
-                const newDate = e.target.value
-                setDate(newDate)
-                loadSignals(newDate)
-              }}
-            />
+        <div className="hero-grid">
+          <div className="hero-info">
+            <div className="brand-row">
+              <div className="brand-mark">
+                <span className="brand-dot" />
+                <span className="brand-text">PROPICKS · MLB</span>
+              </div>
+              <span className="version-tag">{signalsData?.version || 'v1.0'}</span>
+            </div>
+            <h1 className="hero-title">
+              Predictive <span className="hero-title-accent">Signals</span>
+            </h1>
+            <p className="hero-sub">
+              {signalsData?.system || 'ProPicksMLB'} · 6 sistemas estadísticos · {totalSignals}{' '}
+              señal{totalSignals === 1 ? '' : 'es'} activa{totalSignals === 1 ? '' : 's'}
+            </p>
           </div>
 
-          <div className="button-row">
-            <button
-              className="btn btn-secondary"
-              onClick={() => loadSignals(date)}
-              disabled={loading || running}
-            >
-              {loading ? <Spinner /> : '↻'} Refresh
-            </button>
-            <button
-              className="btn btn-primary"
-              onClick={runDailyAnalysis}
-              disabled={running || loading}
-            >
-              {running ? <Spinner /> : '▶'} Run Daily
-            </button>
+          <div className="hero-controls">
+            <div className="control-block">
+              <label className="control-label">ANALYSIS DATE</label>
+              <input
+                className="date-input"
+                type="date"
+                value={date}
+                onChange={(e) => {
+                  const v = e.target.value
+                  setDate(v)
+                  loadSignals(v)
+                }}
+              />
+            </div>
+            <div className="action-row">
+              <button
+                className="btn btn-secondary"
+                onClick={() => loadSignals(date)}
+                disabled={anyBusy}
+                title="Refresh signals"
+              >
+                {loading ? <Spinner /> : <span className="btn-icon">↻</span>}
+                <span>{loading ? 'Loading...' : 'Refresh'}</span>
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={runDailyAnalysis}
+                disabled={anyBusy}
+                title="Ejecutar análisis diario completo"
+              >
+                {running ? <Spinner /> : <span className="btn-icon">▶</span>}
+                <span>{running ? 'Running...' : 'Run Daily'}</span>
+              </button>
+              <button
+                className="btn btn-tertiary"
+                onClick={saveAnalysis}
+                disabled={anyBusy}
+                title="Guardar snapshot del análisis actual"
+              >
+                {saving ? <Spinner /> : <span className="btn-icon">⬇</span>}
+                <span>{saving ? 'Saving...' : 'Save'}</span>
+              </button>
+            </div>
           </div>
         </div>
       </header>
 
-      {/* Status banners */}
+      {/* BANNERS */}
       {error && (
         <div className="banner banner-error">
-          <strong>Error:</strong> {error}
+          <span className="banner-icon">⚠</span>
+          <span>
+            <strong>Error:</strong> {error}
+          </span>
         </div>
       )}
       {success && (
-        <div className="banner banner-success">{success}</div>
+        <div className="banner banner-success">
+          <span className="banner-icon">✓</span>
+          <span>{success}</span>
+        </div>
       )}
 
-      {/* Top stat tiles */}
+      {/* STAT TILES */}
       <section className="stats-row">
         <StatTile
-          label="Moneyline"
+          label="MONEYLINE"
           value={counts.moneyline ?? 0}
           accent="sys-blue"
-          sub="signals"
+          sub="señales activas"
+          icon="ML"
         />
         <StatTile
-          label="Team Runs"
+          label="TEAM RUNS"
           value={counts.team_runs ?? 0}
           accent="sys-green"
-          sub="signals"
+          sub="señales activas"
+          icon="TR"
         />
         <StatTile
-          label="Totals Over"
+          label="TOTALS OVER"
           value={counts.totals_over ?? 0}
           accent="sys-orange"
-          sub="signals"
+          sub="señales activas"
+          icon="OV"
         />
         <StatTile
-          label="Totals Under"
+          label="TOTALS UNDER"
           value={counts.totals_under ?? 0}
           accent="sys-purple"
-          sub="signals"
+          sub="señales activas"
+          icon="UN"
         />
         <StatTile
-          label="Total Signals"
+          label="TOTAL"
           value={totalSignals}
           accent="sys-cyan"
           sub={signalsData?.analysis_date || date}
+          icon="Σ"
         />
+        {gamesProcessed !== null && (
+          <StatTile
+            label="GAMES"
+            value={gamesProcessed}
+            accent="sys-amber"
+            sub="último run-daily"
+            icon="G"
+          />
+        )}
       </section>
 
-      {/* Daily Signals */}
+      {/* DAILY SIGNALS */}
       <section className="panel">
         <div className="panel-head">
-          <div>
-            <h2 className="panel-title">Daily Signals</h2>
-            <p className="panel-sub">
-              Señales estadísticas activas para el {signalsData?.analysis_date || date}
-            </p>
+          <div className="panel-head-left">
+            <div className="panel-head-icon-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M3 12h4l3-9 4 18 3-9h4" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="panel-title">Today's picks</h2>
+              <p className="panel-sub">
+                Señales activas · {signalsData?.analysis_date || date}
+              </p>
+            </div>
           </div>
-          {loading && <span className="loading-tag"><Spinner /> Cargando...</span>}
+          {loading && (
+            <span className="loading-tag">
+              <Spinner />
+              Actualizando
+            </span>
+          )}
         </div>
 
         <div className="tabs">
@@ -592,6 +777,7 @@ export default function App() {
               className={`tab ${activeTab === t.id ? 'active' : ''} ${t.color}`}
               onClick={() => setActiveTab(t.id)}
             >
+              <span className="tab-short">{t.short}</span>
               <span className="tab-label">{t.label}</span>
               <span className="tab-count">{counts[t.id] ?? 0}</span>
             </button>
@@ -606,71 +792,147 @@ export default function App() {
               <SkeletonCard />
             </>
           ) : activeSignals.length === 0 ? (
-            <EmptyState
-              title="Sin señales"
-              message={`No hay señales activas en ${TABS.find(t => t.id === activeTab)?.label} para esta fecha.`}
-            />
+            <EmptyState variant={activeTab} />
           ) : (
-            activeSignals.map(renderSignal)
+            activeSignals.map((s, i) => (
+              <PickCard
+                key={s.id || s.game_pk || `${activeTab}-${i}`}
+                variant={activeTab}
+                signal={s}
+              />
+            ))
           )}
         </div>
       </section>
 
-      {/* System Backtest */}
+      {/* SYSTEM BACKTEST */}
       <section className="panel">
         <div className="panel-head">
-          <div>
-            <h2 className="panel-title">System Backtest</h2>
-            <p className="panel-sub">Rendimiento histórico por sistema y target metric</p>
+          <div className="panel-head-left">
+            <div className="panel-head-icon-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M3 3v18h18M7 14l4-4 4 4 5-5" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="panel-title">System backtest</h2>
+              <p className="panel-sub">
+                Rendimiento histórico por sistema
+                {usingFallbackBacktest && ' · datos estáticos de referencia'}
+              </p>
+            </div>
           </div>
         </div>
 
         <div className="backtest-grid">
           {backtestGroups.map((group) => (
-            <div key={group.system_id} className={`backtest-card ${SYSTEM_COLOR[group.system_id] || 'sys-cyan'}`}>
-              <div className="backtest-system">
+            <div
+              key={group.system_id}
+              className={`backtest-card ${SYSTEM_COLOR[group.system_id] || 'sys-cyan'}`}
+            >
+              <div className="backtest-head">
                 <span className="system-dot" />
                 <span className="system-id">{group.system_id}</span>
               </div>
-              <table className="backtest-table">
-                <thead>
-                  <tr>
-                    <th>Target</th>
-                    <th>Sample</th>
-                    <th>W-L</th>
-                    <th>Rate</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {group.rows.map((r, i) => (
-                    <tr key={i}>
-                      <td className="target-cell">{r.target_metric}</td>
-                      <td>{r.sample_size}</td>
-                      <td>{record(r.wins, r.losses)}</td>
-                      <td>
-                        <span className={`rate-pill rate-${rateClass(r.success_rate)}`}>
-                          {pct(r.success_rate)}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className="backtest-rows">
+                {group.rows.map((r, i) => (
+                  <div key={i} className="bt-row">
+                    <div className="bt-row-left">
+                      <div className="bt-target">{r.target_metric}</div>
+                      <div className="bt-meta">
+                        n={r.sample_size ?? 0} · {record(r.wins, r.losses)}
+                      </div>
+                    </div>
+                    <div className="bt-row-right">
+                      <div className={`rate-pill rate-${rateClass(r.success_rate)}`}>
+                        {pct(r.success_rate)}
+                      </div>
+                      <div className="bt-bar-track">
+                        <div
+                          className={`bt-bar-fill bar-${rateClass(r.success_rate)}`}
+                          style={{
+                            width: `${Math.max(
+                              0,
+                              Math.min(
+                                100,
+                                Number(r.success_rate) <= 1
+                                  ? Number(r.success_rate) * 100
+                                  : Number(r.success_rate)
+                              )
+                            )}%`
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           ))}
         </div>
       </section>
 
-      {/* Postgame Summaries */}
-      {summaries.length > 0 && (
-        <section className="panel">
-          <div className="panel-head">
+      {/* PERFORMANCE */}
+      <section className="panel">
+        <div className="panel-head">
+          <div className="panel-head-left">
+            <div className="panel-head-icon-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 2v20M2 12h20" />
+              </svg>
+            </div>
             <div>
-              <h2 className="panel-title">Postgame Summaries</h2>
-              <p className="panel-sub">Últimos {summaries.length} resúmenes diarios</p>
+              <h2 className="panel-title">Performance</h2>
+              <p className="panel-sub">Métricas guardadas en histórico</p>
             </div>
           </div>
+        </div>
 
+        {performance.length === 0 ? (
+          <div className="mini-empty">Sin datos de performance disponibles.</div>
+        ) : (
+          <div className="perf-grid">
+            {performance.map((row, i) => (
+              <div className="perf-row" key={row.target_metric || i}>
+                <div className="perf-row-left">
+                  <div className="perf-target">{row.target_metric}</div>
+                  <div className="perf-meta">
+                    n={row.sample_size ?? 0} · {record(row.wins, row.losses)}
+                  </div>
+                </div>
+                <div className={`rate-pill rate-${rateClass(row.success_rate)}`}>
+                  {pct(row.success_rate)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* POSTGAME SUMMARIES */}
+      <section className="panel">
+        <div className="panel-head">
+          <div className="panel-head-left">
+            <div className="panel-head-icon-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="3" y="4" width="18" height="18" rx="2" />
+                <path d="M16 2v4M8 2v4M3 10h18" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="panel-title">Postgame summaries</h2>
+              <p className="panel-sub">
+                {summaries.length > 0
+                  ? `Últimos ${summaries.length} resúmenes diarios`
+                  : 'Sin resúmenes disponibles'}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {summaries.length === 0 ? (
+          <div className="mini-empty">Aún no hay resúmenes postgame para mostrar.</div>
+        ) : (
           <div className="summaries-grid">
             {summaries.map((s, i) => (
               <div className="summary-tile" key={s.summary_date || i}>
@@ -681,19 +943,19 @@ export default function App() {
                     {pct(s.success_rate)}
                   </span>
                 </div>
-                <div className="summary-meta">
-                  {s.total_records ?? 0} análisis
-                </div>
+                <div className="summary-meta">{s.total_records ?? 0} análisis</div>
               </div>
             ))}
           </div>
-        </section>
-      )}
+        )}
+      </section>
 
       <footer className="foot">
-        <span>ProPicksMLB · Statistical signals only · No odds, no picks, no betting advice</span>
+        <span>
+          ProPicksMLB · Señales estadísticas · No incluye odds, cuotas ni recomendaciones de
+          apuesta
+        </span>
       </footer>
     </div>
   )
 }
-
