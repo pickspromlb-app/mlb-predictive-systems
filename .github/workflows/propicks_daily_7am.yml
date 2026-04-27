@@ -1,0 +1,37 @@
+﻿name: ProPicks Daily 7AM Update
+
+on:
+  schedule:
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+
+jobs:
+  daily-update:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily 7AM update
+        env:
+          ENVIRONMENT: production
+          TIMEZONE: America/New_York
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MLB_STATS_API_BASE: https://statsapi.mlb.com/api/v1
+          WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
+          WEATHER_API_BASE: ${{ secrets.WEATHER_API_BASE }}
+          API_INTERNAL_TOKEN: ${{ secrets.API_INTERNAL_TOKEN }}
+        run: python -m jobs.daily_7am_update
