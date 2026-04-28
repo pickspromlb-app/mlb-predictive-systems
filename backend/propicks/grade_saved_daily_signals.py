@@ -85,6 +85,9 @@ def grade_saved_daily_signals(analysis_date: str) -> dict:
                 and s.primary_number is not null
               then s.computed_score_for >= s.primary_number
 
+              when s.signal_type = 'RUN_LINE'
+              then (s.computed_score_for - s.computed_score_against) >= 2
+
               when s.signal_type = 'TOTALS_OVER'
                 and s.primary_number is not null
               then s.computed_total_runs >= s.primary_number

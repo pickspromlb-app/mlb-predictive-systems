@@ -84,6 +84,7 @@ def run_daily_propicks(
         [sys.executable, "-m", "propicks.build_team_pitching_profiles"],
         [sys.executable, "-m", "propicks.create_analysis_snapshots"],
         [sys.executable, "-m", "propicks.create_team_runs_snapshots", d],
+        [sys.executable, "-m", "propicks.create_runline_signals", d],
     ]
 
     command_logs = []
@@ -678,6 +679,115 @@ def save_daily_analysis(
         (d,),
     )
 
+
+    run_line_saved = fetch_one(
+        """
+        with src as (
+          select *
+          from propicks.run_line_signals
+          where analysis_date = %s::date
+        ),
+        upserted as (
+          insert into propicks.saved_daily_signals (
+            analysis_date,
+            market_group,
+            signal_type,
+            system_id,
+            version,
+            game_pk,
+            team_id,
+            team_id_key,
+            team_abbr,
+            team_name,
+            opponent_team_id,
+            opponent_abbr,
+            opponent_name,
+            tier,
+            display_label,
+            primary_target,
+            secondary_target,
+            is_final,
+            result_status,
+            score_for,
+            score_against,
+            hit_primary,
+            hit_secondary,
+            metrics,
+            raw_signal,
+            updated_at
+          )
+          select
+            s.analysis_date,
+            'RUN_LINE',
+            'RUN_LINE',
+            s.system_id,
+            coalesce(s.version, 'v1.0'),
+            s.game_pk,
+            s.team_id,
+            coalesce(s.team_id, 0),
+            s.team_abbr,
+            s.team_name,
+            s.opponent_team_id,
+            s.opponent_abbr,
+            s.opponent_name,
+            s.run_line_tier,
+            s.team_abbr || ' Run Line -1.5',
+            'Run Line -1.5',
+            null,
+            coalesce(s.is_final, false),
+            case
+              when s.covered_runline is true then 'WIN'
+              when s.covered_runline is false then 'LOSS'
+              else 'PENDING'
+            end,
+            s.team_score,
+            s.opponent_score,
+            s.covered_runline,
+            null,
+            jsonb_build_object(
+              'target_line', s.target_line,
+              'run_margin', s.run_margin,
+              'team_rs_l3', s.team_rs_l3,
+              'team_ra_l3', s.team_ra_l3,
+              'rs_edge_l3', s.rs_edge_l3,
+              'ra_edge_l3', s.ra_edge_l3,
+              'run_diff_edge_l3', s.run_diff_edge_l3,
+              'era_edge_l3', s.era_edge_l3,
+              'whip_edge_l3', s.whip_edge_l3,
+              'team_rs_l5', s.team_rs_l5,
+              'team_ra_l5', s.team_ra_l5,
+              'rs_edge_l5', s.rs_edge_l5,
+              'ra_edge_l5', s.ra_edge_l5,
+              'run_diff_edge_l5', s.run_diff_edge_l5,
+              'era_edge_l5', s.era_edge_l5,
+              'whip_edge_l5', s.whip_edge_l5
+            ),
+            to_jsonb(s),
+            now()
+          from src s
+          on conflict (analysis_date, signal_type, game_pk, team_id_key, tier)
+          do update set
+            system_id = excluded.system_id,
+            display_label = excluded.display_label,
+            primary_target = excluded.primary_target,
+            secondary_target = excluded.secondary_target,
+            is_final = excluded.is_final,
+            result_status = excluded.result_status,
+            score_for = excluded.score_for,
+            score_against = excluded.score_against,
+            hit_primary = excluded.hit_primary,
+            hit_secondary = excluded.hit_secondary,
+            metrics = excluded.metrics,
+            raw_signal = excluded.raw_signal,
+            updated_at = now()
+          returning 1
+        )
+        select count(*)::int as saved
+        from upserted
+        """,
+        (d,),
+    )
+
     status_normalized = fetch_one(
         """
         with game_state as (
@@ -720,6 +830,7 @@ def save_daily_analysis(
           count(*) filter (where signal_type = 'TEAM_RUNS')::int as team_runs_saved,
           count(*) filter (where signal_type = 'TOTALS_OVER')::int as totals_over_saved,
           count(*) filter (where signal_type = 'TOTALS_UNDER')::int as totals_under_saved,
+          count(*) filter (where signal_type = 'RUN_LINE')::int as run_line_saved,
           count(*) filter (where result_status = 'PENDING')::int as pending,
           count(*) filter (where result_status = 'WIN')::int as wins,
           count(*) filter (where result_status = 'LOSS')::int as losses
@@ -737,6 +848,7 @@ def save_daily_analysis(
             "team_runs": team_runs_saved["saved"],
             "totals_over": totals_over_saved["saved"],
             "totals_under": totals_under_saved["saved"],
+            "run_line": run_line_saved["saved"],
         },
         "counts": counts,
     }
@@ -836,6 +948,9 @@ def grade_saved_signals(
               when s.signal_type = 'TEAM_RUNS'
                 and s.primary_number is not null
               then s.computed_score_for >= s.primary_number
+
+              when s.signal_type = 'RUN_LINE'
+              then (s.computed_score_for - s.computed_score_against) >= 2
 
               when s.signal_type = 'TOTALS_OVER'
                 and s.primary_number is not null
@@ -959,6 +1074,7 @@ def get_saved_signals(
           count(*) filter (where signal_type = 'TEAM_RUNS')::int as team_runs_saved,
           count(*) filter (where signal_type = 'TOTALS_OVER')::int as totals_over_saved,
           count(*) filter (where signal_type = 'TOTALS_UNDER')::int as totals_under_saved,
+          count(*) filter (where signal_type = 'RUN_LINE')::int as run_line_saved,
           count(*) filter (where result_status = 'PENDING')::int as pending,
           count(*) filter (where result_status = 'WIN')::int as wins,
           count(*) filter (where result_status = 'LOSS')::int as losses,
