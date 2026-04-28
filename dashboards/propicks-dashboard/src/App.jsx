@@ -7,10 +7,6 @@ const API_BASE =
 
 const INTERNAL_TOKEN = import.meta.env.VITE_INTERNAL_TOKEN || 'change_me'
 
-/* Endpoint para Save Analysis. Cambiar aquí cuando esté listo el genérico. */
-const SAVE_ANALYSIS_ENDPOINT = '/propicks/save-daily-analysis'
-// Cuando esté disponible, cambiar a: '/propicks/save-daily-analysis'
-
 /* ============================================================
    Helpers
    ============================================================ */
@@ -49,7 +45,7 @@ function rateClass(rate) {
 }
 
 async function getJson(path) {
-  const res = await fetch(API_BASE + path)
+  const res = await fetch(API_BASE + path, { cache: 'no-store' })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return res.json()
 }
@@ -57,14 +53,66 @@ async function getJson(path) {
 async function postJson(path) {
   const res = await fetch(API_BASE + path, {
     method: 'POST',
-    headers: { 'x-internal-token': INTERNAL_TOKEN }
+    headers: { 'x-internal-token': INTERNAL_TOKEN },
+    cache: 'no-store'
   })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return res.json()
 }
 
 /* ============================================================
-   Pick interpretation per market
+   Deduplicación defensiva
+   ============================================================ */
+
+function uniqueBy(items, getKey) {
+  const seen = new Set()
+  return (items || []).filter((item) => {
+    const key = getKey(item)
+    if (key === null || key === undefined) {
+      const fallback = JSON.stringify(item)
+      if (seen.has(fallback)) return false
+      seen.add(fallback)
+      return true
+    }
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function moneylineKey(s) {
+  if (s.analysis_snapshot_id) return `ml:${s.analysis_snapshot_id}`
+  if (s.id) return `ml:id:${s.id}`
+  return `ml:${s.game_pk ?? '?'}:${s.team_id ?? s.team_abbr ?? '?'}:${s.moneyline_tier ?? '?'}`
+}
+
+function teamRunsKey(s) {
+  if (s.analysis_snapshot_id) return `tr:${s.analysis_snapshot_id}`
+  if (s.id) return `tr:id:${s.id}`
+  return `tr:${s.game_pk ?? '?'}:${s.team_id ?? s.team_abbr ?? '?'}:${s.team_runs_tier ?? '?'}`
+}
+
+function totalsOverKey(s) {
+  if (s.first_analysis_snapshot_id) return `ov:${s.first_analysis_snapshot_id}`
+  if (s.id) return `ov:id:${s.id}`
+  return `ov:${s.game_pk ?? '?'}:${s.totals_over_tier ?? '?'}`
+}
+
+function totalsUnderKey(s) {
+  if (s.first_analysis_snapshot_id) return `un:${s.first_analysis_snapshot_id}`
+  if (s.id) return `un:id:${s.id}`
+  return `un:${s.game_pk ?? '?'}:${s.totals_under_tier ?? '?'}`
+}
+
+function savedRowKey(r) {
+  if (r.id) return `sv:id:${r.id}`
+  return `sv:${r.analysis_date ?? '?'}:${r.signal_type ?? '?'}:${r.game_pk ?? '?'}:${
+    r.team_id ?? r.team_abbr ?? '?'
+  }:${r.tier ?? '?'}`
+}
+
+/* ============================================================
+   Pick interpretation (Live)
    ============================================================ */
 
 function interpretTeamRuns(signal) {
@@ -175,7 +223,6 @@ function interpretTotalsUnder(signal) {
 
   const isElite = tier.includes('ELITE')
 
-  // ELITE: el rango sugerido es 7/8
   const titleSuffix = isElite ? 'menos de 7/8 carreras' : 'menos de 8 carreras'
   const subtitle = isElite
     ? 'Señal elite · ambiente muy bajo'
@@ -203,11 +250,11 @@ function interpretTotalsUnder(signal) {
       { label: 'Combined ERA L5', value: signal.combined_era_l5 },
       { label: 'Combined RS L5', value: signal.combined_rs_l5 }
     ],
-    status: deriveUnderStatus(signal, isElite)
+    status: deriveUnderStatus(signal)
   }
 }
 
-function deriveUnderStatus(signal, isElite) {
+function deriveUnderStatus(signal) {
   const isFinal = signal.is_final === true
   const primary = signal.hit_under8
   if (primary === true) return { kind: 'win', label: 'Win' }
@@ -259,7 +306,79 @@ function interpret(variant, signal) {
 }
 
 /* ============================================================
-   Static fallback for backtest (only if endpoint returns empty)
+   Saved row interpretation
+   ============================================================ */
+
+function savedRowVariant(row) {
+  const t = (row.signal_type || '').toString().toLowerCase()
+  if (t.includes('moneyline')) return 'moneyline'
+  if (t.includes('team') && t.includes('run')) return 'team_runs'
+  if (t.includes('over')) return 'totals_over'
+  if (t.includes('under')) return 'totals_under'
+  return 'team_runs'
+}
+
+function savedStatus(row) {
+  const raw = (row.result_status || '').toString().toUpperCase()
+  if (raw === 'WIN' || raw === 'WON' || raw === 'HIT') return { kind: 'win', label: 'Win' }
+  if (raw === 'LOSS' || raw === 'LOST' || raw === 'MISS') return { kind: 'loss', label: 'Loss' }
+  if (raw === 'PENDING') return { kind: 'pending', label: 'Pending' }
+  if (raw === 'FINAL' || row.is_final === true) return { kind: 'final', label: 'Final' }
+  return { kind: 'pending', label: 'Pending' }
+}
+
+function interpretSavedRow(row) {
+  const variant = savedRowVariant(row)
+  const status = savedStatus(row)
+  const techCode = row.tier || row.system_id || ''
+  const objectives = []
+  if (row.primary_target) {
+    objectives.push({ label: 'Objetivo principal', value: row.primary_target })
+  }
+  if (row.secondary_target) {
+    objectives.push({ label: 'Objetivo secundario', value: row.secondary_target })
+  }
+
+  // Title preferido: display_label viene del backend ya formateado
+  const title = row.display_label || row.title || techCode || 'Señal guardada'
+  const subtitle = row.system_id ? `Sistema: ${row.system_id}` : ''
+
+  // Métricas: pueden venir como objeto plano dentro de row.metrics
+  const metricsObj = row.metrics || {}
+  const metrics = Object.entries(metricsObj)
+    .slice(0, 6)
+    .map(([k, v]) => ({ label: k, value: v }))
+
+  return {
+    variant,
+    badge: variantBadge(variant),
+    title,
+    subtitle,
+    objectives,
+    techCode,
+    metrics,
+    status
+  }
+}
+
+function variantBadge(v) {
+  if (v === 'moneyline') return 'Moneyline'
+  if (v === 'team_runs') return 'Team Runs'
+  if (v === 'totals_over') return 'Totals Over'
+  if (v === 'totals_under') return 'Totals Under'
+  return 'Signal'
+}
+
+function variantColorClass(v) {
+  if (v === 'moneyline') return 'sys-blue'
+  if (v === 'team_runs') return 'sys-green'
+  if (v === 'totals_over') return 'sys-orange'
+  if (v === 'totals_under') return 'sys-purple'
+  return 'sys-cyan'
+}
+
+/* ============================================================
+   Static fallback for backtest
    ============================================================ */
 
 const STATIC_BACKTEST = [
@@ -351,7 +470,14 @@ function StatTile({ label, value, accent, sub, icon }) {
 function StatusChip({ status }) {
   if (!status) return null
   const cls = `status-chip s-${status.kind}`
-  const dot = status.kind === 'pending' ? '●' : status.kind === 'win' ? '✓' : status.kind === 'loss' ? '✗' : '◼'
+  const dot =
+    status.kind === 'pending'
+      ? '●'
+      : status.kind === 'win'
+      ? '✓'
+      : status.kind === 'loss'
+      ? '✗'
+      : '◼'
   return (
     <span className={cls}>
       <span className="status-dot">{dot}</span>
@@ -361,48 +487,38 @@ function StatusChip({ status }) {
 }
 
 /* ============================================================
-   Pick Card (autocontained, market-aware)
+   Pick Card (Live)
    ============================================================ */
 
-function PickCard({ variant, signal }) {
+function LivePickCard({ variant, signal }) {
   const data = interpret(variant, signal)
   if (!data) return null
 
-  const colorClass = `sys-${
-    variant === 'team_runs'
-      ? 'green'
-      : variant === 'moneyline'
-      ? 'blue'
-      : variant === 'totals_over'
-      ? 'orange'
-      : 'purple'
-  }`
+  const colorClass = variantColorClass(variant)
 
   return (
     <article className={`pick-card ${colorClass}`}>
-      {/* Top bar: badge market + status */}
       <div className="pick-top-bar">
         <span className={`market-badge ${colorClass}`}>{data.badge}</span>
         <StatusChip status={data.status} />
       </div>
 
-      {/* Title — protagonista */}
       <div className="pick-title-block">
         <h3 className="pick-title">{data.title}</h3>
         <p className="pick-subtitle">{data.subtitle}</p>
         {data.fullLine && <p className="pick-fullline">{data.fullLine}</p>}
       </div>
 
-      {/* Strength tag */}
       <div className="strength-row">
         <span className={`strength-tag ${data.strengthCls}`}>
           <span className="strength-dot" />
           {data.strengthLabel}
         </span>
-        <span className="tech-code" title="Código técnico de la señal">{data.techCode}</span>
+        <span className="tech-code" title="Código técnico de la señal">
+          {data.techCode}
+        </span>
       </div>
 
-      {/* Metrics */}
       <div className="pick-metrics">
         {data.metrics.map((m) => (
           <div key={m.label} className="metric-cell">
@@ -412,15 +528,74 @@ function PickCard({ variant, signal }) {
         ))}
       </div>
 
-      {/* Objectives footer */}
-      <div className="objectives">
-        {data.objectives.map((o) => (
-          <div key={o.label} className="objective-row">
-            <span className="objective-label">{o.label}</span>
-            <span className="objective-value">{o.value}</span>
-          </div>
-        ))}
+      {data.objectives.length > 0 && (
+        <div className="objectives">
+          {data.objectives.map((o) => (
+            <div key={o.label} className="objective-row">
+              <span className="objective-label">{o.label}</span>
+              <span className="objective-value">{o.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </article>
+  )
+}
+
+/* ============================================================
+   Saved Pick Card (Official)
+   ============================================================ */
+
+function SavedPickCard({ row }) {
+  const data = interpretSavedRow(row)
+  const colorClass = variantColorClass(data.variant)
+
+  return (
+    <article className={`pick-card saved-card ${colorClass}`}>
+      <div className="pick-top-bar">
+        <div className="saved-badge-row">
+          <span className={`market-badge ${colorClass}`}>{data.badge}</span>
+          <span className="locked-pill" title="Señal congelada para auditoría">
+            <span className="lock-icon">🔒</span> OFFICIAL
+          </span>
+        </div>
+        <StatusChip status={data.status} />
       </div>
+
+      <div className="pick-title-block">
+        <h3 className="pick-title">{data.title}</h3>
+        {data.subtitle && <p className="pick-subtitle">{data.subtitle}</p>}
+      </div>
+
+      {data.techCode && (
+        <div className="strength-row">
+          <span className="tech-code" title="Código técnico">
+            {data.techCode}
+          </span>
+        </div>
+      )}
+
+      {data.metrics.length > 0 && (
+        <div className="pick-metrics">
+          {data.metrics.map((m) => (
+            <div key={m.label} className="metric-cell">
+              <span className="metric-cell-label">{m.label}</span>
+              <span className="metric-cell-value">{num(m.value, 2)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {data.objectives.length > 0 && (
+        <div className="objectives">
+          {data.objectives.map((o) => (
+            <div key={o.label} className="objective-row">
+              <span className="objective-label">{o.label}</span>
+              <span className="objective-value">{o.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </article>
   )
 }
@@ -445,8 +620,12 @@ function SkeletonCard() {
   )
 }
 
-function EmptyState({ variant }) {
+function EmptyState({ variant, kind }) {
   const tab = TABS.find((t) => t.id === variant)
+  const msg =
+    kind === 'saved'
+      ? 'No hay señales oficiales guardadas en esta categoría.'
+      : 'El sistema no detectó oportunidades para esta categoría en la fecha seleccionada.'
   return (
     <div className="empty-state">
       <div className={`empty-icon ${tab?.color || ''}`}>
@@ -456,9 +635,7 @@ function EmptyState({ variant }) {
         </svg>
       </div>
       <div className="empty-title">No hay señales {tab?.label}</div>
-      <div className="empty-msg">
-        El sistema no detectó oportunidades para esta categoría en la fecha seleccionada.
-      </div>
+      <div className="empty-msg">{msg}</div>
     </div>
   )
 }
@@ -469,37 +646,68 @@ function EmptyState({ variant }) {
 
 export default function App() {
   const [date, setDate] = useState(todayISO())
+
+  // Live signals state
   const [signalsData, setSignalsData] = useState(null)
+
+  // Saved signals state
+  const [savedData, setSavedData] = useState(null)
+
+  // Aux
   const [performance, setPerformance] = useState([])
   const [summaries, setSummaries] = useState([])
 
-  const [loading, setLoading] = useState(false)
+  // Loading flags
+  const [loadingLive, setLoadingLive] = useState(false)
+  const [loadingSaved, setLoadingSaved] = useState(false)
   const [running, setRunning] = useState(false)
   const [saving, setSaving] = useState(false)
 
+  // Banners
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
-  const [activeTab, setActiveTab] = useState('team_runs')
-  const [gamesProcessed, setGamesProcessed] = useState(null)
+  // Tabs
+  const [savedTab, setSavedTab] = useState('team_runs')
+  const [liveTab, setLiveTab] = useState('team_runs')
 
-  const loadSignals = useCallback(async (d) => {
-    setLoading(true)
+  const [lastRunCounts, setLastRunCounts] = useState(null)
+
+  /* ----------------------------------------------------------
+     Carga LIVE — siempre reemplaza el estado completo.
+     ---------------------------------------------------------- */
+  const loadLiveSignals = useCallback(async (d) => {
+    setLoadingLive(true)
     setError('')
+    setSignalsData(null) // reset total
     try {
       const data = await getJson(`/propicks/signals/today?analysis_date=${d}`)
       setSignalsData(data)
-      const counts = data?.counts || {}
-      const tabWithMost = TABS.reduce(
-        (best, t) => ((counts[t.id] || 0) > (counts[best.id] || 0) ? t : best),
-        TABS[0]
-      )
-      if ((counts[tabWithMost.id] || 0) > 0) setActiveTab(tabWithMost.id)
     } catch (err) {
-      setError(err.message || 'Error cargando señales')
+      setError(err.message || 'Error cargando live signals')
       setSignalsData(null)
     } finally {
-      setLoading(false)
+      setLoadingLive(false)
+    }
+  }, [])
+
+  /* ----------------------------------------------------------
+     Carga SAVED — siempre reemplaza el estado completo.
+     Si el endpoint 404 o falla, savedData queda en null
+     (UI muestra estado "no hay análisis oficial").
+     ---------------------------------------------------------- */
+  const loadSavedSignals = useCallback(async (d) => {
+    setLoadingSaved(true)
+    setSavedData(null) // reset total
+    try {
+      const data = await getJson(`/propicks/saved-signals?analysis_date=${d}`)
+      setSavedData(data)
+    } catch (err) {
+      // No marcamos error global porque el endpoint puede no existir aún
+      // o simplemente no haber análisis guardado para esa fecha
+      setSavedData(null)
+    } finally {
+      setLoadingSaved(false)
     }
   }, [])
 
@@ -511,30 +719,50 @@ export default function App() {
     if (perf.status === 'fulfilled') {
       const rows = perf.value?.rows || perf.value || []
       setPerformance(Array.isArray(rows) ? rows : [])
+    } else {
+      setPerformance([])
     }
     if (summ.status === 'fulfilled') {
       const rows = summ.value?.rows || summ.value || []
       setSummaries(Array.isArray(rows) ? rows : [])
+    } else {
+      setSummaries([])
     }
   }, [])
 
-  async function runDailyAnalysis() {
+  /* ----------------------------------------------------------
+     Run Daily — recalcula live signals.
+     Si ya hay análisis oficial guardado, requiere force.
+     ---------------------------------------------------------- */
+  async function runDailyAnalysis(force = false) {
+    const totalSaved = savedData?.counts?.total_saved ?? 0
+    if (totalSaved > 0 && !force) {
+      // Botón normal está disabled, pero por seguridad
+      return
+    }
+    if (totalSaved > 0 && force) {
+      const ok = window.confirm(
+        'This will recalculate live signals and may differ from the saved official analysis. Continue?'
+      )
+      if (!ok) return
+    }
+
     setRunning(true)
     setError('')
     setSuccess('')
     try {
       const data = await postJson(`/propicks/run-daily?analysis_date=${date}`)
       const c = data?.counts || {}
-      if (typeof c.games === 'number') setGamesProcessed(c.games)
+      setLastRunCounts(c)
       const total =
         (c.moneyline_signals ?? 0) +
         (c.team_runs_signals ?? 0) +
         (c.totals_over_signals ?? 0) +
         (c.totals_under_signals ?? 0)
       setSuccess(
-        `Análisis ejecutado · ${c.games ?? 0} juegos procesados · ${total} señales generadas`
+        `Run Daily ejecutado · ${c.games ?? 0} juegos · ${total} señales recalculadas (live)`
       )
-      await loadSignals(date)
+      await loadLiveSignals(date)
       await loadAuxiliary()
     } catch (err) {
       setError(err.message || 'Error ejecutando run-daily')
@@ -543,56 +771,165 @@ export default function App() {
     }
   }
 
+  /* ----------------------------------------------------------
+     Save Analysis — congela el análisis oficial.
+     Refresca SOLO saved-signals (no toca live).
+     ---------------------------------------------------------- */
   async function saveAnalysis() {
     setSaving(true)
     setError('')
     setSuccess('')
     try {
-      const data = await postJson(`${SAVE_ANALYSIS_ENDPOINT}?analysis_date=${date}`)
-      const off = data?.offensive_snapshots ?? data?.snapshots ?? 0
-      const tr3 = data?.team_3plus_snapshots ?? 0
-      const tr5 = data?.team_5plus_snapshots ?? 0
-      setSuccess(
-        `Análisis guardado · ${off} offensive · ${tr3} TR3 · ${tr5} TR5`
-      )
+      const data = await postJson(`/propicks/save-daily-analysis?analysis_date=${date}`)
+      const totalSaved =
+        data?.counts?.total_saved ??
+        data?.total_saved ??
+        data?.saved ??
+        0
+      setSuccess(`Official analysis saved: ${totalSaved} signals`)
+      // Refrescamos saved-signals; live queda intacto
+      await loadSavedSignals(date)
     } catch (err) {
-      setError(err.message || 'Error guardando análisis')
+      setError(err.message || 'Error guardando análisis oficial')
     } finally {
       setSaving(false)
     }
   }
 
+  /* Carga inicial */
   useEffect(() => {
-    loadSignals(date)
+    loadLiveSignals(date)
+    loadSavedSignals(date)
     loadAuxiliary()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /* Auto-clear de mensajes de éxito */
   useEffect(() => {
     if (!success) return
     const t = setTimeout(() => setSuccess(''), 6000)
     return () => clearTimeout(t)
   }, [success])
 
-  const counts = signalsData?.counts || {
-    moneyline: 0,
-    team_runs: 0,
-    totals_over: 0,
-    totals_under: 0
-  }
-  const signals = signalsData?.signals || {
-    moneyline: [],
-    team_runs: [],
-    totals_over: [],
-    totals_under: []
-  }
-  const totalSignals =
-    (counts.moneyline || 0) +
-    (counts.team_runs || 0) +
-    (counts.totals_over || 0) +
-    (counts.totals_under || 0)
+  /* ----------------------------------------------------------
+     LIVE: listas deduplicadas (única fuente de verdad).
+     ---------------------------------------------------------- */
+  const liveMoneyline = useMemo(
+    () => uniqueBy(signalsData?.signals?.moneyline, moneylineKey),
+    [signalsData]
+  )
+  const liveTeamRuns = useMemo(
+    () => uniqueBy(signalsData?.signals?.team_runs, teamRunsKey),
+    [signalsData]
+  )
+  const liveTotalsOver = useMemo(
+    () => uniqueBy(signalsData?.signals?.totals_over, totalsOverKey),
+    [signalsData]
+  )
+  const liveTotalsUnder = useMemo(
+    () => uniqueBy(signalsData?.signals?.totals_under, totalsUnderKey),
+    [signalsData]
+  )
 
-  /* Backtest: usar el del endpoint primero. Si está vacío, fallback estático. */
+  const apiLiveCounts = signalsData?.counts || {}
+  const liveCounts = {
+    moneyline: liveMoneyline.length > 0 ? liveMoneyline.length : (apiLiveCounts.moneyline ?? 0),
+    team_runs: liveTeamRuns.length > 0 ? liveTeamRuns.length : (apiLiveCounts.team_runs ?? 0),
+    totals_over: liveTotalsOver.length > 0 ? liveTotalsOver.length : (apiLiveCounts.totals_over ?? 0),
+    totals_under: liveTotalsUnder.length > 0 ? liveTotalsUnder.length : (apiLiveCounts.totals_under ?? 0)
+  }
+  const liveTotal =
+    liveCounts.moneyline + liveCounts.team_runs + liveCounts.totals_over + liveCounts.totals_under
+
+  /* ----------------------------------------------------------
+     SAVED: rows + counts del backend, deduplicados y agrupados.
+     Acepta tanto savedData.rows como savedData.signals.* .
+     ---------------------------------------------------------- */
+  const savedRowsAll = useMemo(() => {
+    if (!savedData) return []
+    let all = []
+    if (Array.isArray(savedData.rows)) {
+      all = savedData.rows
+    } else if (savedData.signals && typeof savedData.signals === 'object') {
+      // shape alternativo: { signals: { moneyline: [], team_runs: [], ... } }
+      for (const key of ['moneyline', 'team_runs', 'totals_over', 'totals_under']) {
+        const arr = savedData.signals[key]
+        if (Array.isArray(arr)) {
+          all = all.concat(
+            arr.map((r) => ({ ...r, signal_type: r.signal_type || key }))
+          )
+        }
+      }
+    }
+    return uniqueBy(all, savedRowKey)
+  }, [savedData])
+
+  const savedByMarket = useMemo(() => {
+    const buckets = { moneyline: [], team_runs: [], totals_over: [], totals_under: [] }
+    for (const r of savedRowsAll) {
+      const v = savedRowVariant(r)
+      if (buckets[v]) buckets[v].push(r)
+    }
+    return buckets
+  }, [savedRowsAll])
+
+  const savedCounts = savedData?.counts || {}
+  const totalSaved =
+    savedCounts.total_saved ??
+    savedRowsAll.length ??
+    0
+  const officialMode = totalSaved > 0
+
+  const savedAggregates = {
+    pending: savedCounts.pending ?? savedRowsAll.filter((r) => savedStatus(r).kind === 'pending').length,
+    wins: savedCounts.wins ?? savedRowsAll.filter((r) => savedStatus(r).kind === 'win').length,
+    losses: savedCounts.losses ?? savedRowsAll.filter((r) => savedStatus(r).kind === 'loss').length,
+    success_rate: savedCounts.success_rate ?? null,
+    by_market: savedCounts.by_market || null,
+    by_system: savedCounts.by_system || null
+  }
+  // Calcular success_rate si no viene
+  if (savedAggregates.success_rate === null) {
+    const decided = savedAggregates.wins + savedAggregates.losses
+    if (decided > 0) {
+      savedAggregates.success_rate = savedAggregates.wins / decided
+    }
+  }
+
+  /* Auto-seleccionar tab con más señales en cada sección */
+  useEffect(() => {
+    if (!signalsData) return
+    const tabCounts = {
+      moneyline: liveMoneyline.length,
+      team_runs: liveTeamRuns.length,
+      totals_over: liveTotalsOver.length,
+      totals_under: liveTotalsUnder.length
+    }
+    const best = TABS.reduce(
+      (acc, t) => (tabCounts[t.id] > tabCounts[acc.id] ? t : acc),
+      TABS[0]
+    )
+    if (tabCounts[best.id] > 0) setLiveTab(best.id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signalsData])
+
+  useEffect(() => {
+    if (!savedData) return
+    const tabCounts = {
+      moneyline: savedByMarket.moneyline.length,
+      team_runs: savedByMarket.team_runs.length,
+      totals_over: savedByMarket.totals_over.length,
+      totals_under: savedByMarket.totals_under.length
+    }
+    const best = TABS.reduce(
+      (acc, t) => (tabCounts[t.id] > tabCounts[acc.id] ? t : acc),
+      TABS[0]
+    )
+    if (tabCounts[best.id] > 0) setSavedTab(best.id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedData])
+
+  /* Backtest desde el endpoint principal; fallback estático si vacío */
   const backtestGroups = useMemo(() => {
     const apiBacktest = signalsData?.backtest
     if (Array.isArray(apiBacktest) && apiBacktest.length > 0) {
@@ -608,10 +945,23 @@ export default function App() {
   }, [signalsData])
 
   const usingFallbackBacktest =
-    !signalsData?.backtest || (Array.isArray(signalsData.backtest) && signalsData.backtest.length === 0)
+    !signalsData?.backtest ||
+    (Array.isArray(signalsData.backtest) && signalsData.backtest.length === 0)
 
-  const activeSignals = signals[activeTab] || []
-  const anyBusy = loading || running || saving
+  /* Listas activas según tabs */
+  const activeLiveSignals =
+    liveTab === 'moneyline'
+      ? liveMoneyline
+      : liveTab === 'team_runs'
+      ? liveTeamRuns
+      : liveTab === 'totals_over'
+      ? liveTotalsOver
+      : liveTotalsUnder
+
+  const activeSavedRows = savedByMarket[savedTab] || []
+
+  const anyBusy = loadingLive || loadingSaved || running || saving
+  const showGamesTile = lastRunCounts && typeof lastRunCounts.games === 'number'
 
   return (
     <div className="app">
@@ -625,13 +975,20 @@ export default function App() {
                 <span className="brand-text">PROPICKS · MLB</span>
               </div>
               <span className="version-tag">{signalsData?.version || 'v1.0'}</span>
+              {officialMode && (
+                <span className="mode-tag mode-official">
+                  <span className="lock-icon">🔒</span> OFFICIAL MODE
+                </span>
+              )}
             </div>
             <h1 className="hero-title">
               Predictive <span className="hero-title-accent">Signals</span>
             </h1>
             <p className="hero-sub">
-              {signalsData?.system || 'ProPicksMLB'} · 6 sistemas estadísticos · {totalSignals}{' '}
-              señal{totalSignals === 1 ? '' : 'es'} activa{totalSignals === 1 ? '' : 's'}
+              {signalsData?.system || 'ProPicksMLB'} · 6 sistemas estadísticos
+              {officialMode
+                ? ` · ${totalSaved} señal${totalSaved === 1 ? '' : 'es'} oficial${totalSaved === 1 ? '' : 'es'} guardada${totalSaved === 1 ? '' : 's'}`
+                : ` · ${liveTotal} señal${liveTotal === 1 ? '' : 'es'} live`}
             </p>
           </div>
 
@@ -645,42 +1002,78 @@ export default function App() {
                 onChange={(e) => {
                   const v = e.target.value
                   setDate(v)
-                  loadSignals(v)
+                  loadLiveSignals(v)
+                  loadSavedSignals(v)
+                  setLastRunCounts(null)
                 }}
               />
             </div>
             <div className="action-row">
               <button
                 className="btn btn-secondary"
-                onClick={() => loadSignals(date)}
+                onClick={() => {
+                  loadLiveSignals(date)
+                  loadSavedSignals(date)
+                }}
                 disabled={anyBusy}
-                title="Refresh signals"
+                title="Refresh live + saved signals"
               >
-                {loading ? <Spinner /> : <span className="btn-icon">↻</span>}
-                <span>{loading ? 'Loading...' : 'Refresh'}</span>
+                {loadingLive || loadingSaved ? <Spinner /> : <span className="btn-icon">↻</span>}
+                <span>{loadingLive || loadingSaved ? 'Loading...' : 'Refresh'}</span>
               </button>
-              <button
-                className="btn btn-primary"
-                onClick={runDailyAnalysis}
-                disabled={anyBusy}
-                title="Ejecutar análisis diario completo"
-              >
-                {running ? <Spinner /> : <span className="btn-icon">▶</span>}
-                <span>{running ? 'Running...' : 'Run Daily'}</span>
-              </button>
+              {officialMode ? (
+                <button
+                  className="btn btn-locked"
+                  disabled
+                  title="Run Daily bloqueado: hay análisis oficial guardado"
+                >
+                  <span className="btn-icon">🔒</span>
+                  <span>Run Daily Locked</span>
+                </button>
+              ) : (
+                <button
+                  className="btn btn-primary"
+                  onClick={() => runDailyAnalysis(false)}
+                  disabled={anyBusy}
+                  title="Ejecutar análisis diario (solo recalcula live signals)"
+                >
+                  {running ? <Spinner /> : <span className="btn-icon">▶</span>}
+                  <span>{running ? 'Running...' : 'Run Daily'}</span>
+                </button>
+              )}
               <button
                 className="btn btn-tertiary"
                 onClick={saveAnalysis}
                 disabled={anyBusy}
-                title="Guardar snapshot del análisis actual"
+                title="Congelar el análisis oficial para auditoría"
               >
                 {saving ? <Spinner /> : <span className="btn-icon">⬇</span>}
-                <span>{saving ? 'Saving...' : 'Save'}</span>
+                <span>{saving ? 'Saving...' : 'Save Analysis'}</span>
               </button>
             </div>
+            {officialMode && (
+              <button
+                className="btn-force-link"
+                onClick={() => runDailyAnalysis(true)}
+                disabled={anyBusy}
+              >
+                Force Run Daily (override)
+              </button>
+            )}
           </div>
         </div>
       </header>
+
+      {/* OFFICIAL MODE BANNER */}
+      {officialMode && (
+        <div className="banner banner-official">
+          <span className="banner-icon">🔒</span>
+          <div className="banner-text">
+            <strong>Official analysis saved: {totalSaved} signal{totalSaved === 1 ? '' : 's'}.</strong>{' '}
+            Use Saved Analysis for audit. Live signals below may differ if Run Daily is forced again.
+          </div>
+        </div>
+      )}
 
       {/* BANNERS */}
       {error && (
@@ -700,54 +1093,221 @@ export default function App() {
 
       {/* STAT TILES */}
       <section className="stats-row">
-        <StatTile
-          label="MONEYLINE"
-          value={counts.moneyline ?? 0}
-          accent="sys-blue"
-          sub="señales activas"
-          icon="ML"
-        />
-        <StatTile
-          label="TEAM RUNS"
-          value={counts.team_runs ?? 0}
-          accent="sys-green"
-          sub="señales activas"
-          icon="TR"
-        />
-        <StatTile
-          label="TOTALS OVER"
-          value={counts.totals_over ?? 0}
-          accent="sys-orange"
-          sub="señales activas"
-          icon="OV"
-        />
-        <StatTile
-          label="TOTALS UNDER"
-          value={counts.totals_under ?? 0}
-          accent="sys-purple"
-          sub="señales activas"
-          icon="UN"
-        />
-        <StatTile
-          label="TOTAL"
-          value={totalSignals}
-          accent="sys-cyan"
-          sub={signalsData?.analysis_date || date}
-          icon="Σ"
-        />
-        {gamesProcessed !== null && (
-          <StatTile
-            label="GAMES"
-            value={gamesProcessed}
-            accent="sys-amber"
-            sub="último run-daily"
-            icon="G"
-          />
+        {officialMode ? (
+          <>
+            <StatTile
+              label="OFFICIAL TOTAL"
+              value={totalSaved}
+              accent="sys-cyan"
+              sub="signals saved"
+              icon="🔒"
+            />
+            <StatTile
+              label="PENDING"
+              value={savedAggregates.pending}
+              accent="sys-amber"
+              sub="awaiting result"
+              icon="●"
+            />
+            <StatTile
+              label="WINS"
+              value={savedAggregates.wins}
+              accent="sys-green"
+              sub="hits"
+              icon="✓"
+            />
+            <StatTile
+              label="LOSSES"
+              value={savedAggregates.losses}
+              accent="sys-red"
+              sub="misses"
+              icon="✗"
+            />
+            <StatTile
+              label="SUCCESS RATE"
+              value={savedAggregates.success_rate !== null ? pct(savedAggregates.success_rate) : '–'}
+              accent="sys-blue"
+              sub="of decided"
+              icon="%"
+            />
+            {showGamesTile && (
+              <StatTile
+                label="GAMES PROCESSED"
+                value={lastRunCounts.games}
+                accent="sys-amber"
+                sub="last run-daily"
+                icon="G"
+              />
+            )}
+          </>
+        ) : (
+          <>
+            <StatTile
+              label="MONEYLINE"
+              value={liveCounts.moneyline}
+              accent="sys-blue"
+              sub="live signals"
+              icon="ML"
+            />
+            <StatTile
+              label="TEAM RUNS"
+              value={liveCounts.team_runs}
+              accent="sys-green"
+              sub="live signals"
+              icon="TR"
+            />
+            <StatTile
+              label="TOTALS OVER"
+              value={liveCounts.totals_over}
+              accent="sys-orange"
+              sub="live signals"
+              icon="OV"
+            />
+            <StatTile
+              label="TOTALS UNDER"
+              value={liveCounts.totals_under}
+              accent="sys-purple"
+              sub="live signals"
+              icon="UN"
+            />
+            <StatTile
+              label="LIVE TOTAL"
+              value={liveTotal}
+              accent="sys-cyan"
+              sub={signalsData?.analysis_date || date}
+              icon="Σ"
+            />
+            {showGamesTile && (
+              <StatTile
+                label="GAMES PROCESSED"
+                value={lastRunCounts.games}
+                accent="sys-amber"
+                sub="last run-daily"
+                icon="G"
+              />
+            )}
+          </>
         )}
       </section>
 
-      {/* DAILY SIGNALS */}
-      <section className="panel">
+      {/* OFFICIAL SAVED ANALYSIS — primero si existe */}
+      {officialMode && (
+        <section className="panel panel-official">
+          <div className="panel-head">
+            <div className="panel-head-left">
+              <div className="panel-head-icon-box icon-box-official">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="11" width="18" height="11" rx="2" />
+                  <path d="M7 11V7a5 5 0 0110 0v4" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="panel-title">Official Saved Analysis</h2>
+                <p className="panel-sub">
+                  Señales congeladas para auditoría · {savedData?.analysis_date || date}
+                </p>
+              </div>
+            </div>
+            {loadingSaved && (
+              <span className="loading-tag">
+                <Spinner />
+                Cargando
+              </span>
+            )}
+          </div>
+
+          {/* Aggregates row */}
+          <div className="saved-aggregates">
+            <div className="agg-cell">
+              <span className="agg-label">Total saved</span>
+              <span className="agg-value">{totalSaved}</span>
+            </div>
+            <div className="agg-cell agg-pending">
+              <span className="agg-label">Pending</span>
+              <span className="agg-value">{savedAggregates.pending}</span>
+            </div>
+            <div className="agg-cell agg-win">
+              <span className="agg-label">Wins</span>
+              <span className="agg-value">{savedAggregates.wins}</span>
+            </div>
+            <div className="agg-cell agg-loss">
+              <span className="agg-label">Losses</span>
+              <span className="agg-value">{savedAggregates.losses}</span>
+            </div>
+            <div className="agg-cell">
+              <span className="agg-label">Success rate</span>
+              <span className="agg-value">
+                {savedAggregates.success_rate !== null ? pct(savedAggregates.success_rate) : '–'}
+              </span>
+            </div>
+          </div>
+
+          {/* By market / by system breakdowns if available */}
+          {(savedAggregates.by_market || savedAggregates.by_system) && (
+            <div className="breakdowns">
+              {savedAggregates.by_market && (
+                <div className="breakdown">
+                  <h4 className="breakdown-title">By market</h4>
+                  <div className="breakdown-rows">
+                    {Object.entries(savedAggregates.by_market).map(([k, v]) => (
+                      <div className="breakdown-row" key={`bm-${k}`}>
+                        <span className="breakdown-label">{k}</span>
+                        <span className="breakdown-value">{typeof v === 'object' ? JSON.stringify(v) : v}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {savedAggregates.by_system && (
+                <div className="breakdown">
+                  <h4 className="breakdown-title">By system</h4>
+                  <div className="breakdown-rows">
+                    {Object.entries(savedAggregates.by_system).map(([k, v]) => (
+                      <div className="breakdown-row" key={`bs-${k}`}>
+                        <span className="breakdown-label">{k}</span>
+                        <span className="breakdown-value">{typeof v === 'object' ? JSON.stringify(v) : v}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="tabs">
+            {TABS.map((t) => (
+              <button
+                key={`saved-${t.id}`}
+                className={`tab ${savedTab === t.id ? 'active' : ''} ${t.color}`}
+                onClick={() => setSavedTab(t.id)}
+              >
+                <span className="tab-short">{t.short}</span>
+                <span className="tab-label">{t.label}</span>
+                <span className="tab-count">{savedByMarket[t.id]?.length ?? 0}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="signals-grid">
+            {loadingSaved ? (
+              <>
+                <SkeletonCard />
+                <SkeletonCard />
+                <SkeletonCard />
+              </>
+            ) : activeSavedRows.length === 0 ? (
+              <EmptyState variant={savedTab} kind="saved" />
+            ) : (
+              activeSavedRows.map((r) => (
+                <SavedPickCard key={savedRowKey(r)} row={r} />
+              ))
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* LIVE SIGNALS */}
+      <section className={`panel ${officialMode ? 'panel-live-secondary' : ''}`}>
         <div className="panel-head">
           <div className="panel-head-left">
             <div className="panel-head-icon-box">
@@ -756,13 +1316,16 @@ export default function App() {
               </svg>
             </div>
             <div>
-              <h2 className="panel-title">Today's picks</h2>
+              <h2 className="panel-title">
+                Live Signals
+                {officialMode && <span className="panel-title-tag">non-official</span>}
+              </h2>
               <p className="panel-sub">
-                Señales activas · {signalsData?.analysis_date || date}
+                Señales calculadas actuales · {signalsData?.analysis_date || date}
               </p>
             </div>
           </div>
-          {loading && (
+          {loadingLive && (
             <span className="loading-tag">
               <Spinner />
               Actualizando
@@ -770,37 +1333,46 @@ export default function App() {
           )}
         </div>
 
+        <div className="live-warning">
+          <span className="warn-icon">⚠</span>
+          <span>Live signals can change if Run Daily is executed again.</span>
+        </div>
+
         <div className="tabs">
           {TABS.map((t) => (
             <button
-              key={t.id}
-              className={`tab ${activeTab === t.id ? 'active' : ''} ${t.color}`}
-              onClick={() => setActiveTab(t.id)}
+              key={`live-${t.id}`}
+              className={`tab ${liveTab === t.id ? 'active' : ''} ${t.color}`}
+              onClick={() => setLiveTab(t.id)}
             >
               <span className="tab-short">{t.short}</span>
               <span className="tab-label">{t.label}</span>
-              <span className="tab-count">{counts[t.id] ?? 0}</span>
+              <span className="tab-count">{liveCounts[t.id] ?? 0}</span>
             </button>
           ))}
         </div>
 
         <div className="signals-grid">
-          {loading ? (
+          {loadingLive ? (
             <>
               <SkeletonCard />
               <SkeletonCard />
               <SkeletonCard />
             </>
-          ) : activeSignals.length === 0 ? (
-            <EmptyState variant={activeTab} />
+          ) : activeLiveSignals.length === 0 ? (
+            <EmptyState variant={liveTab} kind="live" />
           ) : (
-            activeSignals.map((s, i) => (
-              <PickCard
-                key={s.id || s.game_pk || `${activeTab}-${i}`}
-                variant={activeTab}
-                signal={s}
-              />
-            ))
+            activeLiveSignals.map((s) => {
+              const key =
+                liveTab === 'moneyline'
+                  ? moneylineKey(s)
+                  : liveTab === 'team_runs'
+                  ? teamRunsKey(s)
+                  : liveTab === 'totals_over'
+                  ? totalsOverKey(s)
+                  : totalsUnderKey(s)
+              return <LivePickCard key={key} variant={liveTab} signal={s} />
+            })
           )}
         </div>
       </section>
@@ -836,7 +1408,7 @@ export default function App() {
               </div>
               <div className="backtest-rows">
                 {group.rows.map((r, i) => (
-                  <div key={i} className="bt-row">
+                  <div key={`${group.system_id}-${r.target_metric ?? i}`} className="bt-row">
                     <div className="bt-row-left">
                       <div className="bt-target">{r.target_metric}</div>
                       <div className="bt-meta">
@@ -893,7 +1465,7 @@ export default function App() {
         ) : (
           <div className="perf-grid">
             {performance.map((row, i) => (
-              <div className="perf-row" key={row.target_metric || i}>
+              <div className="perf-row" key={`perf-${row.target_metric ?? i}`}>
                 <div className="perf-row-left">
                   <div className="perf-target">{row.target_metric}</div>
                   <div className="perf-meta">
@@ -935,7 +1507,7 @@ export default function App() {
         ) : (
           <div className="summaries-grid">
             {summaries.map((s, i) => (
-              <div className="summary-tile" key={s.summary_date || i}>
+              <div className="summary-tile" key={`summ-${s.summary_date ?? i}`}>
                 <div className="summary-date">{s.summary_date || '—'}</div>
                 <div className="summary-record-line">
                   <span className="summary-wl">{record(s.wins, s.losses)}</span>
@@ -952,11 +1524,9 @@ export default function App() {
 
       <footer className="foot">
         <span>
-          ProPicksMLB · Señales estadísticas · No incluye odds, cuotas ni recomendaciones de
-          apuesta
+          ProPicksMLB · Señales estadísticas · Saved Analysis = oficial · Live Signals = recalculables
         </span>
       </footer>
     </div>
   )
 }
-
