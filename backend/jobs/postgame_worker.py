@@ -78,7 +78,12 @@ def main():
     )
 
     run_step(
-        "3. Generar resumen postgame",
+        "3. Calificar saved daily signals",
+        [sys.executable, "-m", "propicks.grade_saved_daily_signals", d],
+    )
+
+    run_step(
+        "4. Generar resumen postgame",
         [sys.executable, "-m", "propicks.postgame_daily_summary", d],
     )
 
