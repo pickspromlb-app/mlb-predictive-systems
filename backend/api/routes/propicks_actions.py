@@ -1,11 +1,11 @@
-﻿from datetime import date
+from datetime import date
 import os
 import subprocess
 import sys
 
 from fastapi import APIRouter, Header, HTTPException, Query
 
-from shared.db import fetch_one
+from shared.db import fetch_one, fetch_all
 
 router = APIRouter()
 
@@ -318,8 +318,8 @@ def save_daily_analysis(
             end as normalized_system_id,
 
             case
-              when s.team_runs_tier = 'POWER_5PLUS' then s.team_abbr || ' más de 5 carreras'
-              else s.team_abbr || ' más de 3 carreras'
+              when s.team_runs_tier = 'POWER_5PLUS' then s.team_abbr || ' mas de 5 carreras'
+              else s.team_abbr || ' mas de 3 carreras'
             end as normalized_display_label,
 
             case
@@ -491,7 +491,7 @@ def save_daily_analysis(
             s.home_team_abbr,
             s.home_team_name,
             s.totals_over_tier,
-            s.away_team_abbr || ' @ ' || s.home_team_abbr || ' más de 9 carreras',
+            s.away_team_abbr || ' @ ' || s.home_team_abbr || ' mas de 9 carreras',
             '9+ carreras del juego',
             '10+ carreras del juego',
             coalesce(s.is_final, false),
@@ -678,6 +678,40 @@ def save_daily_analysis(
         (d,),
     )
 
+    status_normalized = fetch_one(
+        """
+        with game_state as (
+          select
+            game_pk,
+            (
+              lower(coalesce(status, '')) in ('final', 'game over', 'completed')
+              or lower(coalesce(detailed_state, '')) in ('final', 'game over', 'completed')
+              or lower(coalesce(detailed_state, '')) like 'final%%'
+            ) as game_is_final
+          from core.games
+          where game_date = %s::date
+        ),
+        updated as (
+          update propicks.saved_daily_signals s
+          set
+            is_final = coalesce(g.game_is_final, false),
+            result_status = case
+              when coalesce(g.game_is_final, false) = false then 'PENDING'
+              when s.hit_primary is true then 'WIN'
+              when s.hit_primary is false then 'LOSS'
+              else 'PENDING'
+            end,
+            updated_at = now()
+          from game_state g
+          where s.analysis_date = %s::date
+            and s.game_pk = g.game_pk
+          returning 1
+        )
+        select count(*)::int as normalized
+        from updated
+        """,
+        (d, d),
+    )
     counts = fetch_one(
         """
         select
@@ -706,3 +740,164 @@ def save_daily_analysis(
         },
         "counts": counts,
     }
+
+
+
+@router.get('/saved-signals')
+def get_saved_signals(
+    analysis_date: date = Query(...),
+):
+    d = analysis_date.isoformat()
+
+    counts = fetch_one(
+        """
+        select
+          count(*)::int as total_saved,
+          count(*) filter (where signal_type = 'MONEYLINE')::int as moneyline_saved,
+          count(*) filter (where signal_type = 'TEAM_RUNS')::int as team_runs_saved,
+          count(*) filter (where signal_type = 'TOTALS_OVER')::int as totals_over_saved,
+          count(*) filter (where signal_type = 'TOTALS_UNDER')::int as totals_under_saved,
+          count(*) filter (where result_status = 'PENDING')::int as pending,
+          count(*) filter (where result_status = 'WIN')::int as wins,
+          count(*) filter (where result_status = 'LOSS')::int as losses,
+          case
+            when count(*) filter (where result_status in ('WIN', 'LOSS')) = 0 then null
+            else round(
+              (
+                count(*) filter (where result_status = 'WIN')::numeric
+                / nullif(count(*) filter (where result_status in ('WIN', 'LOSS')), 0)
+              ) * 100,
+              2
+            )
+          end as success_rate
+        from propicks.saved_daily_signals
+        where analysis_date = %s::date
+        """,
+        (d,),
+    )
+
+    by_market = fetch_all(
+        """
+        select
+          market_group,
+          signal_type,
+          count(*)::int as total,
+          count(*) filter (where result_status = 'PENDING')::int as pending,
+          count(*) filter (where result_status = 'WIN')::int as wins,
+          count(*) filter (where result_status = 'LOSS')::int as losses,
+          case
+            when count(*) filter (where result_status in ('WIN', 'LOSS')) = 0 then null
+            else round(
+              (
+                count(*) filter (where result_status = 'WIN')::numeric
+                / nullif(count(*) filter (where result_status in ('WIN', 'LOSS')), 0)
+              ) * 100,
+              2
+            )
+          end as success_rate
+        from propicks.saved_daily_signals
+        where analysis_date = %s::date
+        group by market_group, signal_type
+        order by market_group, signal_type
+        """,
+        (d,),
+    )
+
+    by_system = fetch_all(
+        """
+        select
+          system_id,
+          signal_type,
+          count(*)::int as total,
+          count(*) filter (where result_status = 'PENDING')::int as pending,
+          count(*) filter (where result_status = 'WIN')::int as wins,
+          count(*) filter (where result_status = 'LOSS')::int as losses,
+          case
+            when count(*) filter (where result_status in ('WIN', 'LOSS')) = 0 then null
+            else round(
+              (
+                count(*) filter (where result_status = 'WIN')::numeric
+                / nullif(count(*) filter (where result_status in ('WIN', 'LOSS')), 0)
+              ) * 100,
+              2
+            )
+          end as success_rate
+        from propicks.saved_daily_signals
+        where analysis_date = %s::date
+        group by system_id, signal_type
+        order by system_id, signal_type
+        """,
+        (d,),
+    )
+
+    rows = fetch_all(
+        """
+        select
+          id,
+          analysis_date,
+          market_group,
+          signal_type,
+          system_id,
+          version,
+          game_pk,
+
+          team_id,
+          team_abbr,
+          team_name,
+          opponent_team_id,
+          opponent_abbr,
+          opponent_name,
+
+          away_team_id,
+          away_team_abbr,
+          away_team_name,
+          home_team_id,
+          home_team_abbr,
+          home_team_name,
+
+          tier,
+          display_label,
+          primary_target,
+          secondary_target,
+
+          is_final,
+          result_status,
+
+          score_for,
+          score_against,
+          away_score,
+          home_score,
+          total_runs,
+
+          hit_primary,
+          hit_secondary,
+
+          metrics,
+          saved_at,
+          updated_at
+        from propicks.saved_daily_signals
+        where analysis_date = %s::date
+        order by
+          case signal_type
+            when 'MONEYLINE' then 1
+            when 'TEAM_RUNS' then 2
+            when 'TOTALS_OVER' then 3
+            when 'TOTALS_UNDER' then 4
+            else 5
+          end,
+          display_label
+        """,
+        (d,),
+    )
+
+    return {
+        "system": "ProPicksMLB",
+        "version": "v1.0",
+        "analysis_date": d,
+        "counts": counts,
+        "by_market": by_market,
+        "by_system": by_system,
+        "rows": rows,
+    }
+
+
