@@ -8,7 +8,7 @@ const API_BASE =
 const INTERNAL_TOKEN = import.meta.env.VITE_INTERNAL_TOKEN || 'change_me'
 
 /* Endpoint para Save Analysis. Cambiar aquí cuando esté listo el genérico. */
-const SAVE_ANALYSIS_ENDPOINT = '/propicks/team-runs/save-analysis'
+const SAVE_ANALYSIS_ENDPOINT = '/propicks/save-daily-analysis'
 // Cuando esté disponible, cambiar a: '/propicks/save-daily-analysis'
 
 /* ============================================================
@@ -959,3 +959,4 @@ export default function App() {
     </div>
   )
 }
+
