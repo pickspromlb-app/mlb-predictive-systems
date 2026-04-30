@@ -65,6 +65,7 @@ def games_for_date(target_date: date):
 def store_boxscore(game_pk: int, game_date: date, away_team_id: int, home_team_id: int, payload: dict):
     batting_rows = []
     pitching_rows = []
+    player_pitching_rows = []
 
     for side, team_id, opp_id in [
         ('away', away_team_id, home_team_id),
@@ -120,6 +121,40 @@ def store_boxscore(game_pk: int, game_date: date, away_team_id: int, home_team_i
             'strikes': as_int(pitching.get('strikes'))
         })
 
+        players = team_data.get('players') or {}
+        pitcher_ids = team_data.get('pitchers') or []
+
+        for idx, pitcher_id in enumerate(pitcher_ids):
+            player_key = f"ID{pitcher_id}"
+            player_data = players.get(player_key) or {}
+            stats = player_data.get('stats') or {}
+            player_pitching = stats.get('pitching') or {}
+
+            if not player_pitching:
+                continue
+
+            player_pitching_rows.append({
+                'game_pk': game_pk,
+                'player_id': int(pitcher_id),
+                'team_id': team_id,
+                'opponent_team_id': opp_id,
+                'game_date': game_date,
+                'started': idx == 0,
+                'ip_outs': parse_ip_outs(player_pitching.get('inningsPitched')),
+                'h': as_int(player_pitching.get('hits')),
+                'r': as_int(player_pitching.get('runs')),
+                'er': as_int(player_pitching.get('earnedRuns')),
+                'bb': as_int(player_pitching.get('baseOnBalls')),
+                'ibb': as_int(player_pitching.get('intentionalWalks')),
+                'so': as_int(player_pitching.get('strikeOuts')),
+                'hr': as_int(player_pitching.get('homeRuns')),
+                'hbp': as_int(player_pitching.get('hitBatsmen') or player_pitching.get('hitByPitch')),
+                'bf': as_int(player_pitching.get('battersFaced')),
+                'pitches': as_int(player_pitching.get('numberOfPitches') or player_pitching.get('pitchesThrown')),
+                'strikes': as_int(player_pitching.get('strikes')),
+                'data_quality_status': 'OK',
+            })
+
     execute_many(
         """insert into core.team_boxscore_batting
         (game_pk,team_id,opponent_team_id,game_date,home_away,ab,r,h,doubles,triples,hr,rbi,bb,ibb,hbp,sf,so,sb,cs,lob,tb,pa,source_timestamp)
@@ -138,7 +173,17 @@ def store_boxscore(game_pk: int, game_date: date, away_team_id: int, home_team_i
         pitching_rows
     )
 
+    execute_many(
+        """insert into core.player_boxscore_pitching
+        (game_pk,player_id,team_id,opponent_team_id,game_date,started,ip_outs,h,r,er,bb,ibb,so,hr,hbp,bf,pitches,strikes,data_quality_status,source_timestamp)
+        values (%(game_pk)s,%(player_id)s,%(team_id)s,%(opponent_team_id)s,%(game_date)s,%(started)s,%(ip_outs)s,%(h)s,%(r)s,%(er)s,%(bb)s,%(ibb)s,%(so)s,%(hr)s,%(hbp)s,%(bf)s,%(pitches)s,%(strikes)s,%(data_quality_status)s,now())
+        on conflict (game_pk,player_id) do update set
+        team_id=excluded.team_id,opponent_team_id=excluded.opponent_team_id,game_date=excluded.game_date,started=excluded.started,ip_outs=excluded.ip_outs,h=excluded.h,r=excluded.r,er=excluded.er,bb=excluded.bb,ibb=excluded.ibb,so=excluded.so,hr=excluded.hr,hbp=excluded.hbp,bf=excluded.bf,pitches=excluded.pitches,strikes=excluded.strikes,data_quality_status=excluded.data_quality_status,updated_at=now()""",
+        player_pitching_rows
+    )
+
     return {
         'team_batting': len(batting_rows),
-        'team_pitching': len(pitching_rows)
+        'team_pitching': len(pitching_rows),
+        'player_pitching': len(player_pitching_rows)
     }
